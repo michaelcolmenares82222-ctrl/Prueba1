@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { TravelPlan } from "../types";
 import { ItineraryTimeline } from "./ItineraryTimeline";
 import { BudgetBreakdown } from "./BudgetBreakdown";
@@ -10,7 +11,29 @@ interface TravelPlanUIProps {
   plan: TravelPlan;
 }
 
+type Tab = "itinerary" | "budget" | "recommendations";
+
 export function TravelPlanUI({ plan }: TravelPlanUIProps) {
+  const [activeTab, setActiveTab] = useState<Tab>("itinerary");
+
+  const tabMeta: Record<Tab, { label: string; subtitle: string; icon: React.ReactNode }> = {
+    itinerary: {
+      label: "Itinerario",
+      subtitle: `Plan completo para tus ${plan.duration} días`,
+      icon: <Calendar className="w-5 h-5" />,
+    },
+    budget: {
+      label: "Presupuesto",
+      subtitle: "Distribución estimada de gastos",
+      icon: <DollarSign className="w-5 h-5" />,
+    },
+    recommendations: {
+      label: "Recomendaciones",
+      subtitle: "Lugares, tips y consejos útiles",
+      icon: <Sparkles className="w-5 h-5" />,
+    },
+  };
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -50,46 +73,43 @@ export function TravelPlanUI({ plan }: TravelPlanUIProps) {
 
       {/* Tabs Navigation */}
       <div className="flex gap-4 border-b border-gray-200">
-        <TabButton active>Itinerario</TabButton>
-        <TabButton>Presupuesto</TabButton>
-        <TabButton>Recomendaciones</TabButton>
+        {(Object.keys(tabMeta) as Tab[]).map((tab) => (
+          <TabButton
+            key={tab}
+            active={activeTab === tab}
+            onClick={() => setActiveTab(tab)}
+          >
+            {tabMeta[tab].label}
+          </TabButton>
+        ))}
       </div>
 
-      {/* Content Sections */}
+      {/* Active Tab Section */}
       <div className="space-y-8">
-        <section id="itinerary">
-          <SectionHeader
-            icon={<Calendar className="w-5 h-5" />}
-            title="Itinerario Día a Día"
-            subtitle={`Plan completo para tus ${plan.duration} días`}
-          />
-          <ItineraryTimeline itinerary={plan.itinerary} />
-        </section>
+        <SectionHeader
+          icon={tabMeta[activeTab].icon}
+          title={tabMeta[activeTab].label}
+          subtitle={tabMeta[activeTab].subtitle}
+        />
 
-        <section id="budget">
-          <SectionHeader
-            icon={<DollarSign className="w-5 h-5" />}
-            title="Desglose de Presupuesto"
-            subtitle="Distribución estimada de gastos"
-          />
+        {activeTab === "itinerary" ? (
+          <ItineraryTimeline itinerary={plan.itinerary} />
+        ) : null}
+
+        {activeTab === "budget" ? (
           <BudgetBreakdown
             breakdown={plan.budgetBreakdown}
             currency={plan.currency}
             days={plan.duration}
           />
-        </section>
+        ) : null}
 
-        <section id="recommendations">
-          <SectionHeader
-            icon={<Sparkles className="w-5 h-5" />}
-            title="Recomendaciones"
-            subtitle="Lugares, tips y consejos útiles"
-          />
+        {activeTab === "recommendations" ? (
           <Recommendations
             recommendations={plan.recommendations}
             destination={plan.destination}
           />
-        </section>
+        ) : null}
       </div>
     </div>
   );
@@ -98,13 +118,16 @@ export function TravelPlanUI({ plan }: TravelPlanUIProps) {
 function TabButton({
   children,
   active = false,
+  onClick,
 }: {
   children: React.ReactNode;
   active?: boolean;
+  onClick?: () => void;
 }) {
   return (
     <button
       type="button"
+      onClick={onClick}
       className={`px-4 py-2 font-medium transition-colors ${
         active
           ? "text-purple-600 border-b-2 border-purple-600"

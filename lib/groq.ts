@@ -33,9 +33,21 @@ export interface GroqCompletionOptions {
   maxTokens?: number;
   systemPrompt?: string;
   stream?: boolean;
+  /**
+   * If set to `{ type: "json_object" }`, asks Groq for guaranteed-parseable JSON
+   * (Groq's OpenAI-compatible JSON mode). The system prompt MUST mention "json".
+   */
+  responseFormat?: { type: "json_object" };
 }
 
-const DEFAULT_MODEL = "llama-3.3-70b-versatile";
+/**
+ * Default model for content generation (rich UIs, JSON output).
+ * Free-tier Groq TPD is per model: `llama-3.3-70b-versatile` is high-quality
+ * but only ~100k tokens/day, while `llama-3.1-8b-instant` allows ~500k.
+ * Override via `GROQ_GENERATION_MODEL` in `.env.local` when you want to swap.
+ */
+const DEFAULT_MODEL =
+  process.env.GROQ_GENERATION_MODEL?.trim() || "llama-3.1-8b-instant";
 const DEFAULT_TEMPERATURE = 0.7;
 const DEFAULT_MAX_TOKENS = 2000;
 
@@ -51,6 +63,7 @@ export async function groqCompletion(
     maxTokens = DEFAULT_MAX_TOKENS,
     systemPrompt,
     stream = false,
+    responseFormat,
   } = options;
 
   try {
@@ -80,25 +93,84 @@ export async function groqCompletion(
       temperature,
       max_tokens: maxTokens,
       stream: false,
+      ...(responseFormat ? { response_format: responseFormat } : {}),
     });
 
     return completion.choices[0]?.message?.content || "";
-  } catch (error: any) {
-    console.error("Error en Groq completion:", error);
+  } catch (error: unknown) {
+    const err = error as {
+      status?: number;
+      message?: string;
+      error?: {
+        message?: string;
+        code?: string;
+        failed_generation?: string;
+      };
+      headers?: Record<string, string>;
+    };
 
-    // Manejo de errores específicos
-    if (error.status === 401) {
-      throw new Error("API key de Groq inválida");
-    } else if (error.status === 429) {
-      throw new Error(
-        "Rate limit excedido. Intenta de nuevo en un momento"
+    // Groq's strict JSON mode (`response_format: json_object`) rejects the entire
+    // response if the model produced even a tiny syntax slip. Retry once without
+    // the constraint so the parser layer can attempt a repair.
+    if (
+      responseFormat &&
+      err?.status === 400 &&
+      err.error?.code === "json_validate_failed"
+    ) {
+      console.warn(
+        "Groq rejected JSON output; retrying without response_format and letting parser repair."
       );
-    } else if (error.status === 500) {
-      throw new Error("Error interno de Groq. Reintentando...");
+      if (typeof err.error?.failed_generation === "string") {
+        return err.error.failed_generation;
+      }
+      return groqCompletion(prompt, { ...options, responseFormat: undefined });
     }
 
-    throw new Error(`Error en Groq: ${error.message}`);
+    console.error("Error en Groq completion:", error);
+
+    if (err?.status === 401) {
+      throw new Error("API key de Groq inválida");
+    } else if (err?.status === 429) {
+      const retryAfter = parseRetryAfter(err);
+      const detail = err.error?.message || err.message || "";
+      const human = retryAfter
+        ? `Rate limit de Groq excedido. Vuelve a intentar en ${retryAfter}.`
+        : "Rate limit de Groq excedido. Intenta de nuevo en un momento.";
+      const tip = detail.includes("tokens per day")
+        ? " Has alcanzado la cuota diaria del modelo. Cambia GROQ_CHAT_MODEL/GROQ_GENERATION_MODEL en .env.local a otro modelo (p.ej. llama-3.1-8b-instant) o espera al reset diario."
+        : "";
+      throw new Error(`${human}${tip}`);
+    } else if (err?.status === 500) {
+      throw new Error("Error interno de Groq. Reintenta en unos segundos.");
+    }
+
+    throw new Error(`Error en Groq: ${err?.message ?? "desconocido"}`);
   }
+}
+
+function parseRetryAfter(err: {
+  message?: string;
+  error?: { message?: string };
+  headers?: Record<string, string>;
+}): string | null {
+  const fromHeader = err.headers?.["retry-after"];
+  if (fromHeader) {
+    const n = Number(fromHeader);
+    if (!Number.isNaN(n) && n > 0) {
+      return formatSeconds(n);
+    }
+    return fromHeader;
+  }
+  const text = err.error?.message || err.message || "";
+  const match = text.match(/try again in ([0-9hms.\s]+)/i);
+  return match?.[1]?.trim() ?? null;
+}
+
+function formatSeconds(seconds: number): string {
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  const m = Math.floor(seconds / 60);
+  const s = Math.round(seconds - m * 60);
+  return s ? `${m}m${s}s` : `${m}m`;
 }
 
 // ============================================

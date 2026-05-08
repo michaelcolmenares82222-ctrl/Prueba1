@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { coerceTravelStyle } from "./coerce-travel-style";
 
 // ============================================
 // Intent Detection Schema
@@ -22,44 +23,65 @@ export const IntentDetectionSchema = z.object({
 // Context Extraction Schemas
 // ============================================
 
+// `.nullish()` accepts both `undefined` and `null`; we then normalise null → undefined
+// in handlers via `stripNullish()` so .default() values can kick in.
 export const TravelContextSchema = z.object({
-  destination: z.string(),
-  duration: z.number().positive(),
-  budget: z.number().positive().optional(),
-  currency: z.string().default("USD"),
-  interests: z.array(z.string()).default([]),
-  travelers: z.number().positive().default(1),
-  travelStyle: z.enum(["budget", "standard", "luxury"]).default("standard"),
-  departureDate: z.string().optional(),
-  flexibility: z.enum(["fixed", "flexible"]).default("flexible"),
+  destination: z.string().min(1, "destination is required"),
+  duration: z.number().positive().default(7),
+  budget: z.number().positive().nullish().transform((v) => v ?? undefined),
+  currency: z.string().nullish().transform((v) => v ?? "USD"),
+  interests: z.array(z.string()).nullish().transform((v) => v ?? []),
+  travelers: z.number().positive().nullish().transform((v) => v ?? 1),
+  travelStyle: z
+    .union([z.string(), z.null(), z.undefined()])
+    .transform((v) => coerceTravelStyle(v)),
+  departureDate: z.string().nullish().transform((v) => v ?? undefined),
+  flexibility: z
+    .enum(["fixed", "flexible"])
+    .nullish()
+    .transform((v) => v ?? "flexible"),
 });
 
 export const DevContextSchema = z.object({
-  projectType: z.string(),
-  timeframe: z.string(),
-  timeframeWeeks: z.number().positive().optional(),
-  currentSkills: z.array(z.string()).default([]),
-  targetStack: z.array(z.string()).default([]),
-  learningGoal: z.string(),
-  experience: z.enum(["beginner", "intermediate", "advanced"]),
-  studyTimePerWeek: z.number().positive().default(10),
+  projectType: z.string().min(1, "projectType is required"),
+  timeframe: z.string().nullish().transform((v) => v ?? "3 meses"),
+  timeframeWeeks: z.number().positive().nullish().transform((v) => v ?? undefined),
+  currentSkills: z.array(z.string()).nullish().transform((v) => v ?? []),
+  targetStack: z.array(z.string()).nullish().transform((v) => v ?? []),
+  learningGoal: z.string().min(1, "learningGoal is required"),
+  experience: z
+    .enum(["beginner", "intermediate", "advanced"])
+    .nullish()
+    .transform((v) => v ?? "beginner"),
+  studyTimePerWeek: z
+    .number()
+    .positive()
+    .nullish()
+    .transform((v) => v ?? 10),
 });
 
 export const FitnessContextSchema = z.object({
-  goal: z.enum([
-    "weight_loss",
-    "muscle_gain",
-    "endurance",
-    "general",
-    "flexibility",
-  ]),
-  timeframe: z.number().positive(),
-  currentLevel: z.enum(["beginner", "intermediate", "advanced"]),
-  restrictions: z.array(z.string()).default([]),
-  equipment: z.enum(["none", "basic", "full_gym"]),
-  daysPerWeek: z.number().min(1).max(7).default(4),
-  dietaryPreferences: z.array(z.string()).default([]),
+  goal: z
+    .enum(["weight_loss", "muscle_gain", "endurance", "general", "flexibility"])
+    .nullish()
+    .transform((v) => v ?? "general"),
+  timeframe: z.number().positive().nullish().transform((v) => v ?? 8),
+  currentLevel: z
+    .enum(["beginner", "intermediate", "advanced"])
+    .nullish()
+    .transform((v) => v ?? "beginner"),
+  restrictions: z.array(z.string()).nullish().transform((v) => v ?? []),
+  equipment: z
+    .enum(["none", "basic", "full_gym"])
+    .nullish()
+    .transform((v) => v ?? "basic"),
+  daysPerWeek: z.number().min(1).max(7).nullish().transform((v) => v ?? 4),
+  dietaryPreferences: z.array(z.string()).nullish().transform((v) => v ?? []),
 });
+
+export type TravelContext = z.infer<typeof TravelContextSchema>;
+export type DevContext = z.infer<typeof DevContextSchema>;
+export type FitnessContext = z.infer<typeof FitnessContextSchema>;
 
 export const LearningContextSchema = z.object({
   subject: z.string(),

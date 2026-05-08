@@ -5,68 +5,122 @@ import {
   FitnessContextSchema,
 } from "./schemas";
 
-// ============================================
-// Action Definitions
-// ============================================
+const OMIT = "Omit if user did not mention it.";
 
 const travelParameters: Parameter[] = [
   {
-    name: "context",
-    type: "object",
-    description: "Contexto del viaje extraído del usuario",
+    name: "destination",
+    type: "string",
+    description: "City or region (e.g. 'Tokyo', 'Barcelona, Spain'). Required.",
     required: true,
+  },
+  {
+    name: "duration",
+    type: "number",
+    description: `Trip length in days (positive integer). ${OMIT}`,
+    required: false,
+  },
+  {
+    name: "budget",
+    type: "number",
+    description: `Total budget as a number. ${OMIT}`,
+    required: false,
+  },
+  {
+    name: "travelers",
+    type: "number",
+    description: `Number of travelers (positive integer). ${OMIT}`,
+    required: false,
+  },
+  {
+    name: "interests",
+    type: "string[]",
+    description: `User interests as strings. ${OMIT}`,
+    required: false,
   },
 ];
 
 const devParameters: Parameter[] = [
   {
-    name: "context",
-    type: "object",
-    description: "Contexto del proyecto de desarrollo",
+    name: "projectType",
+    type: "string",
+    description: "Project type or target role (e.g. 'Frontend Developer'). Required.",
     required: true,
+  },
+  {
+    name: "learningGoal",
+    type: "string",
+    description: "Main learning goal (e.g. 'land first junior job'). Required.",
+    required: true,
+  },
+  {
+    name: "timeframe",
+    type: "string",
+    description: `Target timeframe in plain text (e.g. '3 months'). ${OMIT}`,
+    required: false,
+  },
+  {
+    name: "currentSkills",
+    type: "string[]",
+    description: `Skills the user already has, as strings. ${OMIT}`,
+    required: false,
   },
 ];
 
 const fitnessParameters: Parameter[] = [
   {
-    name: "context",
-    type: "object",
-    description: "Contexto del objetivo fitness",
-    required: true,
+    name: "goal",
+    type: "string",
+    description: `Main fitness goal in plain text. ${OMIT}`,
+    required: false,
+  },
+  {
+    name: "timeframe",
+    type: "number",
+    description: `Plan length in weeks (positive integer). ${OMIT}`,
+    required: false,
+  },
+  {
+    name: "daysPerWeek",
+    type: "number",
+    description: `Training days per week (1-7). ${OMIT}`,
+    required: false,
+  },
+  {
+    name: "restrictions",
+    type: "string[]",
+    description: `Injuries or limitations as strings. ${OMIT}`,
+    required: false,
   },
 ];
 
 export const COPILOT_ACTIONS = {
-  // Acción: Generar plan de viaje
   generateTravelPlan: {
     name: "generate_travel_plan",
     description:
-      "Genera un plan de viaje completo con itinerario, presupuesto y recomendaciones",
+      "Generate a full travel plan (day-by-day itinerary, budget, recommendations). " +
+      "Only `destination` is required; omit any parameter the user did not mention.",
     parameters: travelParameters,
     schema: TravelContextSchema,
   },
 
-  // Acción: Generar roadmap de desarrollo
   generateDevRoadmap: {
     name: "generate_dev_roadmap",
     description:
-      "Genera un roadmap de aprendizaje para desarrollo de software",
+      "Generate a development learning roadmap. Requires `projectType` and `learningGoal`; " +
+      "omit other parameters if the user did not mention them.",
     parameters: devParameters,
     schema: DevContextSchema,
   },
 
-  // Acción: Generar plan fitness
   generateFitnessPlan: {
     name: "generate_fitness_plan",
     description:
-      "Genera un plan de entrenamiento y nutrición personalizado",
+      "Generate a personalized training and nutrition plan. All parameters are optional; " +
+      "omit any the user did not mention.",
     parameters: fitnessParameters,
     schema: FitnessContextSchema,
   },
 };
-
-// ============================================
-// Helper Types
-// ============================================
 
 export type CopilotActionName = keyof typeof COPILOT_ACTIONS;
