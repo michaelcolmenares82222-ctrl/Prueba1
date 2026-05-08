@@ -24,3 +24,31 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* CopilotKit Customization */
+:root {
+  --copilot-kit-primary-color: #9333ea;
+  --copilot-kit-background-color: #1e1b4b;
+  --copilot-kit-text-color: #f3f4f6;
+  --copilot-kit-border-color: rgba(147, 51, 234, 0.2);
+}
+
+.copilotKitSidebar {
+  background: linear-gradient(135deg, #1e1b4b 0%, #4c1d95 100%);
+  border-left: 1px solid rgba(147, 51, 234, 0.3);
+}
+
+.copilotKitMessage {
+  animation: fadeIn 0.3s ease-in;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
