@@ -2,18 +2,25 @@ import { NextRequest, NextResponse } from "next/server";
 import { detectIntent } from "@/lib/intent-detection";
 import { extractContext } from "@/lib/context-extraction";
 import { checkRateLimit } from "@/lib/groq";
+import type { IntentType } from "@/lib/types";
 import { z } from "zod";
 
 // ============================================
 // Request Schema
 // ============================================
 
+const IntentHintSchema = z.enum(["travel", "fitness", "development"]);
+
 const AnalyzeRequestSchema = z.object({
   message: z
     .string()
     .min(1, "Message cannot be empty")
-    .max(1000, "Message too long"),
-  userId: z.string().optional(), // Para rate limiting
+    .max(2000, "Message too long"),
+  userId: z.string().optional(),
+  /** Si el cliente ya sabe el intent (conversación guiada), evita clasificar mal mensajes cortos. */
+  intentHint: IntentHintSchema.optional(),
+  /** Datos ya recopilados en el cliente; se antepone al mensaje para extracción incremental. */
+  priorContext: z.record(z.string(), z.unknown()).optional(),
 });
 
 // ============================================
@@ -26,8 +33,12 @@ export async function POST(request: NextRequest) {
   try {
     // Parse y valida request body
     const body = await request.json();
-    const { message, userId = "anonymous" } =
-      AnalyzeRequestSchema.parse(body);
+    const {
+      message,
+      userId = "anonymous",
+      intentHint,
+      priorContext,
+    } = AnalyzeRequestSchema.parse(body);
 
     console.log(`📥 Analyzing message from ${userId}:`, message);
 
@@ -42,17 +53,37 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Step 1: Detect intent
-    const intentResult = await detectIntent(message);
+    const contextualMessage =
+      priorContext && Object.keys(priorContext).length > 0
+        ? [
+            "=== Datos ya recopilados (JSON) ===",
+            JSON.stringify(priorContext, null, 2),
+            "",
+            "=== Nuevo mensaje del usuario ===",
+            message,
+          ].join("\n")
+        : message;
 
-    if (intentResult.confidence < 0.5) {
+    // Step 1: Detect intent (o usar hint del cliente en modo conversacional)
+    const intentResult = intentHint
+      ? {
+          intent: intentHint as IntentType,
+          confidence: 1,
+          reasoning: "intentHint from client (progressive conversation)",
+        }
+      : await detectIntent(contextualMessage);
+
+    if (!intentHint && intentResult.confidence < 0.5) {
       console.warn(
         "⚠️ Low confidence detection, using generic fallback"
       );
     }
 
     // Step 2: Extract context
-    const context = await extractContext(intentResult.intent, message);
+    const context = await extractContext(
+      intentResult.intent,
+      contextualMessage
+    );
 
     // Response
     const response = {
@@ -71,25 +102,27 @@ export async function POST(request: NextRequest) {
     );
 
     return NextResponse.json(response, { status: 200 });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("❌ Error in /api/analyze:", error);
 
     // Errores de validación de Zod
-    if (error?.name === "ZodError") {
+    if (error instanceof z.ZodError) {
       return NextResponse.json(
         {
           error: "Invalid request",
-          details: error.errors ?? error.issues,
+          details: error.issues,
         },
         { status: 400 }
       );
     }
 
     // Otros errores
+    const message =
+      error instanceof Error ? error.message : "Unknown error";
     return NextResponse.json(
       {
         error: "Internal server error",
-        message: error?.message || "Unknown error",
+        message,
       },
       { status: 500 }
     );
@@ -115,7 +148,9 @@ export async function GET() {
     description:
       "Analyzes user input to detect intent and extract context",
     requestBody: {
-      message: "string (required, 1-1000 chars)",
+      message: "string (required, 1-2000 chars)",
+      intentHint: "travel | fitness | development (optional)",
+      priorContext: "object (optional, progressive merge)",
       userId: "string (optional, for rate limiting)",
     },
     responseFields: {

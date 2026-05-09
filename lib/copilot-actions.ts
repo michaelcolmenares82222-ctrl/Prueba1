@@ -5,91 +5,88 @@ import {
   FitnessContextSchema,
 } from "./schemas";
 
-const OMIT = "Omit if user did not mention it.";
+// ============================================================
+// Esquemas estructurados pero MUY simples para Groq.
+// ------------------------------------------------------------
+// Aprendizaje del bug `tool_use_failed`:
+//   - Un solo `userMessage: string` también confunde al modelo.
+//   - Schemas con arrays / objects anidados / enums lo rompen.
+//   - Lo que SÍ funciona: 2-3 parámetros primitivos
+//     (string|number) TODOS opcionales, con descripciones claras.
+// El handler en `app/page.tsx` reconstruye una frase a partir de
+// estos args, llama a /api/analyze para extraer el resto del
+// contexto y luego ejecuta el flujo correspondiente.
+// ============================================================
 
-const travelParameters: Parameter[] = [
+const TRAVEL_PARAMS: Parameter[] = [
   {
     name: "destination",
     type: "string",
-    description: "City or region (e.g. 'Tokyo', 'Barcelona, Spain'). Required.",
-    required: true,
+    description: "Ciudad o país que el usuario quiere visitar.",
+    required: false,
   },
   {
     name: "duration",
     type: "number",
-    description: `Trip length in days (positive integer). ${OMIT}`,
+    description: "Duración del viaje en días.",
     required: false,
   },
   {
     name: "budget",
     type: "number",
-    description: `Total budget as a number. ${OMIT}`,
+    description: "Presupuesto total del viaje en USD.",
     required: false,
   },
   {
     name: "travelers",
     type: "number",
-    description: `Number of travelers (positive integer). ${OMIT}`,
+    description: "Número de personas que viajan (1 si va solo).",
     required: false,
   },
   {
     name: "interests",
-    type: "string[]",
-    description: `User interests as strings. ${OMIT}`,
+    type: "string",
+    description:
+      "Intereses separados por coma: cultura, gastronomía, playa, naturaleza…",
     required: false,
   },
 ];
 
-const devParameters: Parameter[] = [
-  {
-    name: "projectType",
-    type: "string",
-    description: "Project type or target role (e.g. 'Frontend Developer'). Required.",
-    required: true,
-  },
-  {
-    name: "learningGoal",
-    type: "string",
-    description: "Main learning goal (e.g. 'land first junior job'). Required.",
-    required: true,
-  },
-  {
-    name: "timeframe",
-    type: "string",
-    description: `Target timeframe in plain text (e.g. '3 months'). ${OMIT}`,
-    required: false,
-  },
-  {
-    name: "currentSkills",
-    type: "string[]",
-    description: `Skills the user already has, as strings. ${OMIT}`,
-    required: false,
-  },
-];
-
-const fitnessParameters: Parameter[] = [
+const FITNESS_PARAMS: Parameter[] = [
   {
     name: "goal",
     type: "string",
-    description: `Main fitness goal in plain text. ${OMIT}`,
+    description:
+      "Objetivo en español del usuario. Ejemplos: 'bajar peso', 'ganar músculo', 'tonificar', 'mejorar resistencia'.",
     required: false,
   },
   {
-    name: "timeframe",
+    name: "currentWeight",
     type: "number",
-    description: `Plan length in weeks (positive integer). ${OMIT}`,
+    description: "Peso actual del usuario en kilogramos.",
     required: false,
   },
   {
-    name: "daysPerWeek",
+    name: "height",
     type: "number",
-    description: `Training days per week (1-7). ${OMIT}`,
+    description: "Altura del usuario en centímetros.",
+    required: false,
+  },
+];
+
+const DEV_PARAMS: Parameter[] = [
+  {
+    name: "goal",
+    type: "string",
+    description:
+      "Qué quiere aprender el usuario. Ejemplos: 'React', 'Python para data science', 'desarrollo backend'.",
     required: false,
   },
   {
-    name: "restrictions",
-    type: "string[]",
-    description: `Injuries or limitations as strings. ${OMIT}`,
+    name: "currentLevel",
+    type: "string",
+    description:
+      "Nivel actual del usuario: 'principiante', 'intermedio' o 'avanzado'.",
     required: false,
   },
 ];
@@ -98,28 +95,23 @@ export const COPILOT_ACTIONS = {
   generateTravelPlan: {
     name: "generate_travel_plan",
     description:
-      "Generate a full travel plan (day-by-day itinerary, budget, recommendations). " +
-      "Only `destination` is required; omit any parameter the user did not mention.",
-    parameters: travelParameters,
+      "Genera un plan de viaje personalizado cuando el usuario menciona viajar, visitar o conocer un lugar.",
+    parameters: TRAVEL_PARAMS,
     schema: TravelContextSchema,
   },
-
-  generateDevRoadmap: {
-    name: "generate_dev_roadmap",
-    description:
-      "Generate a development learning roadmap. Requires `projectType` and `learningGoal`; " +
-      "omit other parameters if the user did not mention them.",
-    parameters: devParameters,
-    schema: DevContextSchema,
-  },
-
   generateFitnessPlan: {
     name: "generate_fitness_plan",
     description:
-      "Generate a personalized training and nutrition plan. All parameters are optional; " +
-      "omit any the user did not mention.",
-    parameters: fitnessParameters,
+      "Genera un plan de fitness personalizado cuando el usuario menciona objetivos físicos (bajar peso, ganar músculo, tonificar, resistencia, etc.).",
+    parameters: FITNESS_PARAMS,
     schema: FitnessContextSchema,
+  },
+  generateDevRoadmap: {
+    name: "generate_dev_roadmap",
+    description:
+      "Genera un roadmap de aprendizaje cuando el usuario quiere aprender a programar, una tecnología, un stack o un rol técnico.",
+    parameters: DEV_PARAMS,
+    schema: DevContextSchema,
   },
 };
 

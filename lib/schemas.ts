@@ -42,6 +42,21 @@ export const TravelContextSchema = z.object({
     .transform((v) => v ?? "flexible"),
 });
 
+/** Solo para `/api/analyze` extracción: sin defaults que inventen duration/travelers. */
+export const TravelPartialExtractSchema = z
+  .object({
+    destination: z.string().min(1).optional(),
+    duration: z.number().positive().optional(),
+    budget: z.number().positive().optional(),
+    currency: z.string().optional(),
+    interests: z.array(z.string()).optional(),
+    travelers: z.number().positive().optional(),
+    travelStyle: z.string().optional(),
+    departureDate: z.string().optional(),
+    flexibility: z.enum(["fixed", "flexible"]).optional(),
+  })
+  .strip();
+
 export const DevContextSchema = z.object({
   projectType: z.string().min(1, "projectType is required"),
   timeframe: z.string().nullish().transform((v) => v ?? "3 meses"),
@@ -60,6 +75,20 @@ export const DevContextSchema = z.object({
     .transform((v) => v ?? 10),
 });
 
+/** Extracción incremental sin defaults que rellenen roadmap antes de tiempo. */
+export const DevPartialExtractSchema = z
+  .object({
+    projectType: z.string().min(1).optional(),
+    timeframe: z.string().optional(),
+    timeframeWeeks: z.number().positive().optional(),
+    currentSkills: z.array(z.string()).optional(),
+    targetStack: z.array(z.string()).optional(),
+    learningGoal: z.string().min(1).optional(),
+    experience: z.enum(["beginner", "intermediate", "advanced"]).optional(),
+    studyTimePerWeek: z.number().positive().optional(),
+  })
+  .strip();
+
 export const FitnessContextSchema = z.object({
   goal: z
     .enum(["weight_loss", "muscle_gain", "endurance", "general", "flexibility"])
@@ -77,7 +106,37 @@ export const FitnessContextSchema = z.object({
     .transform((v) => v ?? "basic"),
   daysPerWeek: z.number().min(1).max(7).nullish().transform((v) => v ?? 4),
   dietaryPreferences: z.array(z.string()).nullish().transform((v) => v ?? []),
+  currentWeight: z.number().positive().optional(),
+  targetWeight: z.number().positive().optional(),
+  height: z.number().positive().optional(),
+  age: z.number().positive().optional(),
+  gender: z.string().optional(),
 });
+
+export const FitnessPartialExtractSchema = z
+  .object({
+    goal: z
+      .enum([
+        "weight_loss",
+        "muscle_gain",
+        "endurance",
+        "general",
+        "flexibility",
+      ])
+      .optional(),
+    timeframe: z.number().positive().optional(),
+    currentLevel: z.enum(["beginner", "intermediate", "advanced"]).optional(),
+    restrictions: z.array(z.string()).optional(),
+    equipment: z.enum(["none", "basic", "full_gym"]).optional(),
+    daysPerWeek: z.number().min(1).max(7).optional(),
+    dietaryPreferences: z.array(z.string()).optional(),
+    currentWeight: z.number().positive().optional(),
+    targetWeight: z.number().positive().optional(),
+    height: z.number().positive().optional(),
+    age: z.number().positive().optional(),
+    gender: z.string().optional(),
+  })
+  .strip();
 
 export type TravelContext = z.infer<typeof TravelContextSchema>;
 export type DevContext = z.infer<typeof DevContextSchema>;
@@ -110,12 +169,24 @@ export function validateTravelContext(data: unknown) {
   return TravelContextSchema.parse(data);
 }
 
+export function validateTravelPartialExtract(data: unknown) {
+  return TravelPartialExtractSchema.parse(data);
+}
+
 export function validateDevContext(data: unknown) {
   return DevContextSchema.parse(data);
 }
 
+export function validateDevPartialExtract(data: unknown) {
+  return DevPartialExtractSchema.parse(data);
+}
+
 export function validateFitnessContext(data: unknown) {
   return FitnessContextSchema.parse(data);
+}
+
+export function validateFitnessPartialExtract(data: unknown) {
+  return FitnessPartialExtractSchema.parse(data);
 }
 
 export function validateLearningContext(data: unknown) {

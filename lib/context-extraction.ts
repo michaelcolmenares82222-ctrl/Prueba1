@@ -1,8 +1,8 @@
 import { groqJsonCompletion } from "./groq";
 import {
-  validateTravelContext,
-  validateDevContext,
-  validateFitnessContext,
+  validateTravelPartialExtract,
+  validateDevPartialExtract,
+  validateFitnessPartialExtract,
   validateLearningContext,
   validateGenericContext,
 } from "./schemas";
@@ -57,7 +57,7 @@ export async function extractContext(
     console.log("✅ Context extracted:", validated);
 
     return validated;
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("❌ Error extracting context:", error);
 
     // Fallback genérico
@@ -71,28 +71,40 @@ export async function extractContext(
 function getPromptSection(intent: IntentType): string {
   const sections = CONTEXT_EXTRACTOR_PROMPT.split("---");
 
+  // El primer bloque del markdown contiene las "Reglas generales".
+  // Se anteponen a la sección específica de cada intent para que el
+  // modelo no invente campos no mencionados por el usuario.
+  const preamble = sections[0] ?? "";
+
+  let section = "";
   switch (intent) {
     case "travel":
-      return sections[0] ?? "";
+      section = sections[1] ?? "";
+      break;
     case "development":
-      return sections[1] ?? sections[0] ?? "";
+      section = sections[2] ?? sections[1] ?? "";
+      break;
     case "fitness":
-      return sections[2] ?? sections[0] ?? "";
+      section = sections[3] ?? sections[1] ?? "";
+      break;
     case "learning":
-      return sections[3] ?? sections[0] ?? "";
+      section = sections[4] ?? sections[1] ?? "";
+      break;
     default:
-      return sections[4] ?? sections[0] ?? "";
+      section = sections[5] ?? sections[1] ?? "";
   }
+
+  return `${preamble}\n\n---\n\n${section}`;
 }
 
 function validateContext(intent: IntentType, data: unknown): ContextResult {
   switch (intent) {
     case "travel":
-      return validateTravelContext(data) as TravelContext;
+      return validateTravelPartialExtract(data) as TravelContext;
     case "development":
-      return validateDevContext(data) as DevContext;
+      return validateDevPartialExtract(data) as DevContext;
     case "fitness":
-      return validateFitnessContext(data) as FitnessContext;
+      return validateFitnessPartialExtract(data) as FitnessContext;
     case "learning":
       return validateLearningContext(data) as LearningContext;
     default:

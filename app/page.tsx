@@ -1,7 +1,7 @@
 "use client";
 
 import { useCopilotAction } from "@copilotkit/react-core";
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { TravelPlanUI } from "./components/templates/travel/TravelPlanUI";
 import { FitnessPlanUI } from "./components/templates/fitness/FitnessPlanUI";
 import { LoadingSpinner } from "./components/ui/LoadingSpinner";
@@ -29,13 +29,51 @@ import {
 import { COPILOT_ACTIONS } from "@/lib/copilot-actions";
 import { stripNullish } from "@/lib/args-utils";
 import {
+  ConversationManager,
+  validateContext,
+  mergeExtractedIntoCollected,
+  stripConversationMeta,
+  fieldPresent,
+  type ConversationIntent,
+} from "@/lib/conversation-manager";
+import {
   FitnessPlan,
   TravelPlan,
   DevRoadmap,
 } from "./components/templates/types";
 
-// Maps the user-facing Spanish labels emitted by the forms to the canonical
-// shape expected by the Zod schemas in lib/schemas.ts.
+// ============================================================
+// Tool result rendered directly in the chat
+// ============================================================
+
+type ToolBubbleVariant = "info" | "success" | "error";
+
+const TOOL_BUBBLE_PALETTE: Record<ToolBubbleVariant, string> = {
+  info: "border-slate-300 bg-slate-50 text-slate-700 italic",
+  success: "border-emerald-300 bg-emerald-50 text-emerald-900",
+  error: "border-red-300 bg-red-50 text-red-900",
+};
+
+function ToolBubble({
+  variant = "info",
+  children,
+}: {
+  variant?: ToolBubbleVariant;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      className={`border rounded-xl px-4 py-3 my-1 leading-relaxed text-sm ${TOOL_BUBBLE_PALETTE[variant]}`}
+    >
+      {children}
+    </div>
+  );
+}
+
+// ============================================================
+// Form → context mappers (used when the user uses the modal forms)
+// ============================================================
+
 function travelFormToContext(data: TravelFormData): Record<string, unknown> {
   const styleMap: Record<TravelFormData["travelStyle"], string> = {
     mochilero: "budget",
@@ -81,6 +119,128 @@ function devFormToContext(data: DevFormData): Record<string, unknown> {
   };
 }
 
+// ============================================================
+// Pure helpers (no React state) — kept outside the component so
+// they don't get recreated on every render and are safe to use
+// inside `useCallback` deps.
+// ============================================================
+
+async function generateUI(
+  intent: "travel" | "fitness" | "development",
+  context: unknown
+) {
+  const res = await fetch("/api/generate-ui", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ intent, context }),
+  });
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as {
+      error?: string;
+      message?: string;
+    };
+    throw new Error(
+      data.message || data.error || `Error generando ${intent} UI`
+    );
+  }
+  return (await res.json()) as { content: string; context: unknown };
+}
+
+function CopilotActionBubble({
+  status,
+  result,
+  pendingLabel,
+}: {
+  status: string;
+  result: unknown;
+  pendingLabel: string;
+}) {
+  if (status === "executing" || status === "inProgress") {
+    return <ToolBubble variant="info">{pendingLabel}</ToolBubble>;
+  }
+  if (status === "complete") {
+    const text = typeof result === "string" ? result : "";
+    const isFollowUp = text.includes("¿") || text.includes("(opcional");
+    return (
+      <ToolBubble variant={isFollowUp ? "info" : "success"}>{text}</ToolBubble>
+    );
+  }
+  return <></>;
+}
+
+function mapSpanishToExperience(
+  raw?: string
+): "beginner" | "intermediate" | "advanced" | undefined {
+  if (!raw || typeof raw !== "string") return undefined;
+  const x = raw.trim().toLowerCase();
+  if (/principiante|novato|iniciante/.test(x)) return "beginner";
+  if (/intermedio/.test(x)) return "intermediate";
+  if (/avanzado|experto/.test(x)) return "advanced";
+  return undefined;
+}
+
+function finalizeDevCollected(data: Record<string, unknown>): Record<string, unknown> {
+  const out = { ...data };
+  const g = typeof out.goal === "string" ? out.goal.trim() : "";
+  if (g) {
+    if (!out.learningGoal) out.learningGoal = g;
+    if (!out.projectType) out.projectType = g;
+    delete out.goal;
+  }
+  return out;
+}
+
+async function analyzeMessage(
+  userMessage: string,
+  options?: {
+    intentHint?: ConversationIntent;
+    priorContext?: Record<string, unknown>;
+  }
+): Promise<{ intent: string; context: Record<string, unknown> }> {
+  const res = await fetch("/api/analyze", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      message: userMessage,
+      ...(options?.intentHint ? { intentHint: options.intentHint } : {}),
+      ...(options?.priorContext &&
+      Object.keys(options.priorContext).length > 0
+        ? { priorContext: options.priorContext }
+        : {}),
+    }),
+  });
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(data.error || "Error al analizar la solicitud");
+  }
+  return (await res.json()) as {
+    intent: string;
+    context: Record<string, unknown>;
+  };
+}
+
+function friendlyErrorMessage(
+  rawMessage: string,
+  kind: "viaje" | "fitness" | "desarrollo"
+): string {
+  const msg = rawMessage.toLowerCase();
+  if (msg.includes("rate limit") || msg.includes("rate_limit") || msg.includes("429")) {
+    return "El asistente está saturado en este momento. Espera unos segundos y vuelve a intentar.";
+  }
+  if (msg.includes("tool_use_failed") || msg.includes("failed to call a function")) {
+    return "No pude entender bien la solicitud. Intenta reformularla con menos detalle a la vez.";
+  }
+  if (msg.includes("invalid_enum_value") || msg.includes("zoderror")) {
+    const label =
+      kind === "desarrollo" ? "roadmap de desarrollo" : `plan de ${kind}`;
+    return `Algunos datos no encajaron. Intenta describir tu ${label} de forma más simple.`;
+  }
+  if (msg.includes("failed to fetch") || msg.includes("networkerror")) {
+    return "No pude conectarme al servidor. Revisa tu conexión y vuelve a intentar.";
+  }
+  return rawMessage;
+}
+
 function fitnessFormToContext(data: FitnessFormData): Record<string, unknown> {
   const goalMap: Record<FitnessFormData["goal"], string> = {
     "bajar peso": "weight_loss",
@@ -110,7 +270,6 @@ function fitnessFormToContext(data: FitnessFormData): Record<string, unknown> {
     equipment: equipmentMap[data.equipment],
     daysPerWeek: data.daysPerWeek,
     dietaryPreferences,
-    // Extra body metrics (Zod strips them; surface for future schema upgrades).
     currentWeight: data.currentWeight,
     targetWeight: data.targetWeight,
     height: data.height,
@@ -120,6 +279,9 @@ function fitnessFormToContext(data: FitnessFormData): Record<string, unknown> {
 }
 
 export default function Home() {
+  // ----------------------------------------------------------
+  // 1. State
+  // ----------------------------------------------------------
   const [travelPlan, setTravelPlan] = useState<TravelPlan | null>(null);
   const [fitnessPlan, setFitnessPlan] = useState<FitnessPlan | null>(null);
   const [devPlan, setDevPlan] = useState<DevRoadmap | null>(null);
@@ -129,147 +291,538 @@ export default function Home() {
   const [showFitnessForm, setShowFitnessForm] = useState(false);
   const [showDevForm, setShowDevForm] = useState(false);
 
-  async function generateUI(intent: "travel" | "fitness" | "development", context: unknown) {
-    const res = await fetch("/api/generate-ui", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ intent, context }),
-    });
-    if (!res.ok) {
-      const data = (await res.json().catch(() => ({}))) as {
-        error?: string;
-        message?: string;
-      };
-      throw new Error(
-        data.message || data.error || `Error generando ${intent} UI`
-      );
-    }
-    return (await res.json()) as { content: string; context: unknown };
-  }
+  // ----------------------------------------------------------
+  // 2. Core flows (validate → generate-ui → parse → setState)
+  // ----------------------------------------------------------
+  const runTravelFlow = useCallback(
+    async (rawCtx: Record<string, unknown>): Promise<string> => {
+      setLoading(true);
+      setError(null);
+      try {
+        const ctx = TravelContextSchema.parse(stripNullish(rawCtx));
+        console.log("✅ Travel context validated:", ctx);
+        const data = await generateUI("travel", ctx);
+        const plan = parseTravelPlan(data.content, ctx);
+        console.log("🗺️ Travel plan parsed:", plan);
+        setTravelPlan(plan);
+        setFitnessPlan(null);
+        setDevPlan(null);
+        return `¡Plan de viaje a ${ctx.destination} listo! Mira el itinerario, presupuesto y recomendaciones en la pantalla principal.`;
+      } catch (err: unknown) {
+        const rawMsg =
+          err instanceof Error
+            ? err.message
+            : "Hubo un error generando el plan de viaje";
+        console.error("❌ Travel error:", err);
+        const friendly = friendlyErrorMessage(rawMsg, "viaje");
+        setError(friendly);
+        throw new Error(friendly);
+      } finally {
+        setLoading(false);
+      }
+    },
+    []
+  );
 
-  function friendlyErrorMessage(
-    rawMessage: string,
-    kind: "viaje" | "fitness" | "desarrollo"
-  ): string {
-    const msg = rawMessage.toLowerCase();
-    if (msg.includes("rate limit") || msg.includes("rate_limit") || msg.includes("429")) {
-      return "El asistente está saturado en este momento. Espera unos segundos y vuelve a intentar.";
-    }
-    if (msg.includes("tool_use_failed") || msg.includes("failed to call a function")) {
-      return "No pude entender bien la solicitud. Intenta reformularla con menos detalle a la vez.";
-    }
-    if (msg.includes("invalid_enum_value") || msg.includes("zoderror")) {
-      const label =
-        kind === "desarrollo" ? "roadmap de desarrollo" : `plan de ${kind}`;
-      return `Algunos datos no encajaron. Intenta describir tu ${label} de forma más simple.`;
-    }
-    if (msg.includes("failed to fetch") || msg.includes("networkerror")) {
-      return "No pude conectarme al servidor. Revisa tu conexión y vuelve a intentar.";
-    }
-    return rawMessage;
-  }
+  const runFitnessFlow = useCallback(
+    async (rawCtx: Record<string, unknown>): Promise<string> => {
+      setLoading(true);
+      setError(null);
+      try {
+        const ctx = FitnessContextSchema.parse(stripNullish(rawCtx));
+        console.log("✅ Fitness context validated:", ctx);
+        const data = await generateUI("fitness", ctx);
+        const plan = parseFitnessPlan(data.content, ctx);
+        console.log("🏋️ Fitness plan parsed:", plan);
+        setFitnessPlan(plan);
+        setTravelPlan(null);
+        setDevPlan(null);
+        return "¡Plan de fitness generado! Mira tu rutina semanal y guía nutricional en la pantalla principal.";
+      } catch (err: unknown) {
+        const rawMsg =
+          err instanceof Error
+            ? err.message
+            : "Hubo un error generando el plan de fitness";
+        console.error("❌ Fitness error:", err);
+        const friendly = friendlyErrorMessage(rawMsg, "fitness");
+        setError(friendly);
+        throw new Error(friendly);
+      } finally {
+        setLoading(false);
+      }
+    },
+    []
+  );
 
-  const handleGenerateTravel = async (
-    args: Record<string, unknown>
-  ): Promise<string> => {
-    setLoading(true);
-    setError(null);
-    try {
-      const ctx = TravelContextSchema.parse(stripNullish(args));
-      const data = await generateUI("travel", ctx);
-      const plan = parseTravelPlan(data.content, ctx);
-      setTravelPlan(plan);
-      setFitnessPlan(null);
-      setDevPlan(null);
-      return `¡Plan de viaje a ${ctx.destination} listo! Revisa el itinerario, presupuesto y recomendaciones.`;
-    } catch (err: unknown) {
-      const rawMsg =
-        err instanceof Error
-          ? err.message
-          : "Hubo un error generando el plan de viaje";
-      console.error("Error generating travel plan:", err);
-      const friendly = friendlyErrorMessage(rawMsg, "viaje");
-      setError(friendly);
-      return friendly;
-    } finally {
-      setLoading(false);
-    }
-  };
+  const runDevFlow = useCallback(
+    async (rawCtx: Record<string, unknown>): Promise<string> => {
+      setLoading(true);
+      setError(null);
+      try {
+        const ctx = DevContextSchema.parse(stripNullish(rawCtx));
+        console.log("✅ Dev context validated:", ctx);
+        const data = await generateUI("development", ctx);
+        const plan = parseDevRoadmap(data.content, ctx);
+        console.log("📚 Dev roadmap parsed:", plan);
+        setDevPlan(plan);
+        setTravelPlan(null);
+        setFitnessPlan(null);
+        return `¡Roadmap para "${ctx.projectType}" listo! Mira fases, stack y recursos en la pantalla principal.`;
+      } catch (err: unknown) {
+        const rawMsg =
+          err instanceof Error
+            ? err.message
+            : "Hubo un error generando el roadmap de desarrollo";
+        console.error("❌ Dev error:", err);
+        const friendly = friendlyErrorMessage(rawMsg, "desarrollo");
+        setError(friendly);
+        throw new Error(friendly);
+      } finally {
+        setLoading(false);
+      }
+    },
+    []
+  );
 
-  const handleGenerateFitness = async (
-    args: Record<string, unknown>
-  ): Promise<string> => {
-    setLoading(true);
-    setError(null);
-    try {
-      const ctx = FitnessContextSchema.parse(stripNullish(args));
-      const data = await generateUI("fitness", ctx);
-      const plan = parseFitnessPlan(data.content, ctx);
-      setFitnessPlan(plan);
-      setTravelPlan(null);
-      setDevPlan(null);
-      return "¡Plan de fitness generado! Revisa tu rutina y guía nutricional personalizada.";
-    } catch (err: unknown) {
-      const rawMsg =
-        err instanceof Error
-          ? err.message
-          : "Hubo un error generando el plan de fitness";
-      console.error("Error generating fitness plan:", err);
-      const friendly = friendlyErrorMessage(rawMsg, "fitness");
-      setError(friendly);
-      return friendly;
-    } finally {
-      setLoading(false);
-    }
-  };
+  // ----------------------------------------------------------
+  // 3. Chat tool handlers — structured args (todos opcionales).
+  //    Reconstruimos una frase con lo que mandó el LLM, lo
+  //    pasamos a /api/analyze para extraer el contexto completo
+  //    y mergeamos los args primitivos sobre el resultado para no
+  //    perder lo que el modelo SÍ acertó.
+  // ----------------------------------------------------------
+  const handleGenerateTravelFromChat = useCallback(
+    async (args: {
+      destination?: string;
+      duration?: number;
+      budget?: number;
+      travelers?: number;
+      interests?: string;
+    }): Promise<string> => {
+      console.log("🌍 Travel tool called with args:", args);
 
-  const handleGenerateDev = async (
-    args: Record<string, unknown>
-  ): Promise<string> => {
-    setLoading(true);
-    setError(null);
-    try {
-      const ctx = DevContextSchema.parse(stripNullish(args));
-      const data = await generateUI("development", ctx);
-      const plan = parseDevRoadmap(data.content, ctx);
-      setDevPlan(plan);
-      setTravelPlan(null);
-      setFitnessPlan(null);
-      return `¡Roadmap para "${ctx.projectType}" listo! Revisa fases, stack y recursos.`;
-    } catch (err: unknown) {
-      const rawMsg =
-        err instanceof Error
-          ? err.message
-          : "Hubo un error generando el roadmap de desarrollo";
-      console.error("Error generating dev roadmap:", err);
-      const friendly = friendlyErrorMessage(rawMsg, "desarrollo");
-      setError(friendly);
-      return friendly;
-    } finally {
-      setLoading(false);
-    }
-  };
+      try {
+        let conversation = ConversationManager.load();
+        if (!conversation || conversation.intent !== "travel") {
+          conversation = {
+            intent: "travel",
+            collectedData: {},
+            missingFields: [],
+            isComplete: false,
+          };
+          ConversationManager.save(conversation);
+        }
 
-  useCopilotAction({
-    name: COPILOT_ACTIONS.generateTravelPlan.name,
-    description: COPILOT_ACTIONS.generateTravelPlan.description,
-    parameters: COPILOT_ACTIONS.generateTravelPlan.parameters,
-    handler: (args) => handleGenerateTravel(args),
-  });
+        const prevEmpty = Number(
+          conversation.collectedData._emptyAttempts ?? 0
+        );
+        const hasNewData =
+          (args.destination != null &&
+            String(args.destination).trim() !== "") ||
+          (args.duration != null && Number.isFinite(args.duration)) ||
+          (args.budget != null && Number.isFinite(args.budget)) ||
+          (args.travelers != null && Number.isFinite(args.travelers)) ||
+          (args.interests != null && String(args.interests).trim() !== "");
 
-  useCopilotAction({
-    name: COPILOT_ACTIONS.generateDevRoadmap.name,
-    description: COPILOT_ACTIONS.generateDevRoadmap.description,
-    parameters: COPILOT_ACTIONS.generateDevRoadmap.parameters,
-    handler: (args) => handleGenerateDev(args),
-  });
+        if (!hasNewData) {
+          console.warn(
+            "⚠️ Travel tool called without new fields — possible loop"
+          );
+          const emptyAttempts = prevEmpty + 1;
+          if (emptyAttempts > 2) {
+            console.error("❌ Too many empty travel tool calls, clearing state");
+            ConversationManager.clear();
+            return "Parece que hay un problema. Empecemos de nuevo: ¿a dónde quieres viajar?";
+          }
+          ConversationManager.mergeData({ _emptyAttempts: emptyAttempts });
+          conversation = ConversationManager.load()!;
+        } else {
+          ConversationManager.mergeData({ _emptyAttempts: 0 });
+          conversation = ConversationManager.load()!;
+        }
 
-  useCopilotAction({
-    name: COPILOT_ACTIONS.generateFitnessPlan.name,
-    description: COPILOT_ACTIONS.generateFitnessPlan.description,
-    parameters: COPILOT_ACTIONS.generateFitnessPlan.parameters,
-    handler: (args) => handleGenerateFitness(args),
-  });
+        const patch: Record<string, unknown> = {};
+        if (args.destination != null && String(args.destination).trim() !== "") {
+          patch.destination = String(args.destination).trim();
+        }
+        if (args.duration != null && Number.isFinite(args.duration)) {
+          patch.duration = args.duration;
+        }
+        if (args.budget != null && Number.isFinite(args.budget)) {
+          patch.budget = args.budget;
+        }
+        if (args.travelers != null && Number.isFinite(args.travelers)) {
+          patch.travelers = args.travelers;
+        }
+        if (args.interests != null && String(args.interests).trim() !== "") {
+          const list = String(args.interests)
+            .split(/[,;]/)
+            .map((s) => s.trim())
+            .filter(Boolean);
+          if (list.length > 0) patch.interests = list;
+        }
+
+        conversation = ConversationManager.mergeData(patch);
+
+        const parts: string[] = [];
+        if (args.destination) parts.push(`viajar a ${args.destination}`);
+        if (args.duration) parts.push(`por ${args.duration} días`);
+        if (args.budget) parts.push(`con presupuesto de $${args.budget}`);
+        if (args.travelers) parts.push(`${args.travelers} persona(s)`);
+        if (args.interests) parts.push(`intereses: ${args.interests}`);
+        const userMessage =
+          parts.length > 0
+            ? `Quiero ${parts.join(" ")}`
+            : "Sigo dando detalles de mi viaje.";
+
+        const analyzed = await analyzeMessage(userMessage, {
+          intentHint: "travel",
+          priorContext: stripConversationMeta(conversation.collectedData),
+        });
+        console.log("✅ Analysis result:", analyzed);
+
+        let merged = mergeExtractedIntoCollected(
+          "travel",
+          conversation.collectedData,
+          analyzed.context as Record<string, unknown>
+        );
+        merged = { ...merged, ...patch };
+
+        if (/omitir|da igual|lo que sea|no importa|cualquiera/i.test(userMessage)) {
+          if (!fieldPresent("travel", "duration", merged))
+            merged.duration = 7;
+          if (!fieldPresent("travel", "budget", merged))
+            merged.budget = 1500;
+          if (!fieldPresent("travel", "travelers", merged))
+            merged.travelers = 2;
+          if (!fieldPresent("travel", "interests", merged))
+            merged.interests = ["cultura", "gastronomía"];
+        }
+
+        conversation = {
+          ...conversation,
+          collectedData: merged,
+        };
+        ConversationManager.save(conversation);
+
+        console.log("═══════════════════════════════════");
+        console.log("📊 CURRENT STATE (travel):");
+        console.log("  Intent:", conversation.intent);
+        console.log(
+          "  Collected:",
+          JSON.stringify(conversation.collectedData, null, 2)
+        );
+        console.log("  Patch / tool args:", JSON.stringify(patch, null, 2));
+        console.log("═══════════════════════════════════");
+
+        const validation = validateContext(conversation);
+        console.log("✅ Validation:", validation);
+
+        if (!validation.isComplete && validation.nextQuestion) {
+          console.log(`❓ Asking for: ${validation.nextField}`);
+          return validation.nextQuestion;
+        }
+
+        ConversationManager.clear();
+        return await runTravelFlow(stripConversationMeta(merged));
+      } catch (err: unknown) {
+        const rawMsg =
+          err instanceof Error
+            ? err.message
+            : "Error generando el plan de viaje";
+        console.error("❌ Travel chat error:", err);
+        const friendly = friendlyErrorMessage(rawMsg, "viaje");
+        setError(friendly);
+        ConversationManager.clear();
+        throw new Error(friendly);
+      }
+    },
+    [runTravelFlow]
+  );
+
+  const handleGenerateFitnessFromChat = useCallback(
+    async (args: {
+      goal?: string;
+      currentWeight?: number;
+      height?: number;
+    }): Promise<string> => {
+      console.log("💪 Fitness tool called with args:", args);
+
+      try {
+        let conversation = ConversationManager.load();
+        if (!conversation || conversation.intent !== "fitness") {
+          conversation = {
+            intent: "fitness",
+            collectedData: {},
+            missingFields: [],
+            isComplete: false,
+          };
+          ConversationManager.save(conversation);
+        }
+
+        const prevEmpty = Number(
+          conversation.collectedData._emptyAttempts ?? 0
+        );
+        const hasNewData =
+          (args.goal != null && String(args.goal).trim() !== "") ||
+          (args.currentWeight != null && Number.isFinite(args.currentWeight)) ||
+          (args.height != null && Number.isFinite(args.height));
+
+        if (!hasNewData) {
+          console.warn(
+            "⚠️ Fitness tool called without new fields — possible loop"
+          );
+          const emptyAttempts = prevEmpty + 1;
+          if (emptyAttempts > 2) {
+            ConversationManager.clear();
+            return "Parece que hay un problema. Empecemos de nuevo: ¿cuál es tu objetivo de fitness?";
+          }
+          ConversationManager.mergeData({ _emptyAttempts: emptyAttempts });
+          conversation = ConversationManager.load()!;
+        } else {
+          ConversationManager.mergeData({ _emptyAttempts: 0 });
+          conversation = ConversationManager.load()!;
+        }
+
+        const patch: Record<string, unknown> = {};
+        if (args.currentWeight != null && Number.isFinite(args.currentWeight)) {
+          patch.currentWeight = args.currentWeight;
+        }
+        if (args.height != null && Number.isFinite(args.height)) {
+          patch.height = args.height;
+        }
+
+        conversation = ConversationManager.mergeData(patch);
+
+        const parts: string[] = [];
+        if (args.goal) parts.push(String(args.goal));
+        if (args.currentWeight) parts.push(`peso actual ${args.currentWeight}kg`);
+        if (args.height) parts.push(`altura ${args.height}cm`);
+        const userMessage =
+          parts.length > 0
+            ? parts.join(", ")
+            : "Sigo dando detalles de mi plan de fitness.";
+
+        const analyzed = await analyzeMessage(userMessage, {
+          intentHint: "fitness",
+          priorContext: stripConversationMeta(conversation.collectedData),
+        });
+        console.log("✅ Analysis result:", analyzed);
+
+        let merged = mergeExtractedIntoCollected(
+          "fitness",
+          conversation.collectedData,
+          analyzed.context as Record<string, unknown>
+        );
+        merged = { ...merged, ...patch };
+
+        conversation = {
+          ...conversation,
+          collectedData: merged,
+        };
+        ConversationManager.save(conversation);
+
+        console.log("═══════════════════════════════════");
+        console.log("📊 CURRENT STATE (fitness):");
+        console.log("  Intent:", conversation.intent);
+        console.log(
+          "  Collected:",
+          JSON.stringify(conversation.collectedData, null, 2)
+        );
+        console.log("  Patch / tool args:", JSON.stringify(patch, null, 2));
+        console.log("═══════════════════════════════════");
+
+        const validation = validateContext(conversation);
+        console.log("✅ Validation:", validation);
+
+        if (!validation.isComplete && validation.nextQuestion) {
+          console.log(`❓ Asking for: ${validation.nextField}`);
+          return validation.nextQuestion;
+        }
+
+        ConversationManager.clear();
+        return await runFitnessFlow(stripConversationMeta(merged));
+      } catch (err: unknown) {
+        const rawMsg =
+          err instanceof Error
+            ? err.message
+            : "Error generando el plan de fitness";
+        console.error("❌ Fitness chat error:", err);
+        const friendly = friendlyErrorMessage(rawMsg, "fitness");
+        setError(friendly);
+        ConversationManager.clear();
+        throw new Error(friendly);
+      }
+    },
+    [runFitnessFlow]
+  );
+
+  const handleGenerateDevFromChat = useCallback(
+    async (args: {
+      goal?: string;
+      currentLevel?: string;
+    }): Promise<string> => {
+      console.log("💻 Dev tool called with args:", args);
+
+      try {
+        let conversation = ConversationManager.load();
+        if (!conversation || conversation.intent !== "development") {
+          conversation = {
+            intent: "development",
+            collectedData: {},
+            missingFields: [],
+            isComplete: false,
+          };
+          ConversationManager.save(conversation);
+        }
+
+        const prevEmpty = Number(
+          conversation.collectedData._emptyAttempts ?? 0
+        );
+        const hasNewData =
+          (args.goal != null && String(args.goal).trim() !== "") ||
+          mapSpanishToExperience(args.currentLevel) != null;
+
+        if (!hasNewData) {
+          console.warn("⚠️ Dev tool called without new fields — possible loop");
+          const emptyAttempts = prevEmpty + 1;
+          if (emptyAttempts > 2) {
+            ConversationManager.clear();
+            return "Parece que hay un problema. Empecemos de nuevo: ¿qué quieres aprender?";
+          }
+          ConversationManager.mergeData({ _emptyAttempts: emptyAttempts });
+          conversation = ConversationManager.load()!;
+        } else {
+          ConversationManager.mergeData({ _emptyAttempts: 0 });
+          conversation = ConversationManager.load()!;
+        }
+
+        const patch: Record<string, unknown> = {};
+        if (args.goal != null && String(args.goal).trim() !== "") {
+          patch.goal = String(args.goal).trim();
+        }
+        const exp = mapSpanishToExperience(args.currentLevel);
+        if (exp) patch.experience = exp;
+
+        conversation = ConversationManager.mergeData(patch);
+
+        const parts: string[] = [];
+        if (args.goal) parts.push(`aprender ${args.goal}`);
+        if (args.currentLevel) parts.push(`nivel ${args.currentLevel}`);
+        const userMessage =
+          parts.length > 0
+            ? `Quiero ${parts.join(", ")}`
+            : "Sigo con mi roadmap de aprendizaje.";
+
+        const analyzed = await analyzeMessage(userMessage, {
+          intentHint: "development",
+          priorContext: stripConversationMeta(conversation.collectedData),
+        });
+        console.log("✅ Analysis result:", analyzed);
+
+        let merged = mergeExtractedIntoCollected(
+          "development",
+          conversation.collectedData,
+          analyzed.context as Record<string, unknown>
+        );
+        merged = { ...merged, ...patch };
+        merged = finalizeDevCollected(merged);
+
+        conversation = {
+          ...conversation,
+          collectedData: merged,
+        };
+        ConversationManager.save(conversation);
+
+        console.log("═══════════════════════════════════");
+        console.log("📊 CURRENT STATE (development):");
+        console.log("  Intent:", conversation.intent);
+        console.log(
+          "  Collected:",
+          JSON.stringify(conversation.collectedData, null, 2)
+        );
+        console.log("  Patch / tool args:", JSON.stringify(patch, null, 2));
+        console.log("═══════════════════════════════════");
+
+        const validation = validateContext(conversation);
+        console.log("✅ Validation:", validation);
+
+        if (!validation.isComplete && validation.nextQuestion) {
+          console.log(`❓ Asking for: ${validation.nextField}`);
+          return validation.nextQuestion;
+        }
+
+        ConversationManager.clear();
+        return await runDevFlow(stripConversationMeta(merged));
+      } catch (err: unknown) {
+        const rawMsg =
+          err instanceof Error
+            ? err.message
+            : "Error generando el roadmap de desarrollo";
+        console.error("❌ Dev chat error:", err);
+        const friendly = friendlyErrorMessage(rawMsg, "desarrollo");
+        setError(friendly);
+        ConversationManager.clear();
+        throw new Error(friendly);
+      }
+    },
+    [runDevFlow]
+  );
+
+  // ----------------------------------------------------------
+  // 4. Register Copilot actions with stable handler refs.
+  //    Status-based render → bubble in chat reflects progress.
+  // ----------------------------------------------------------
+  useCopilotAction(
+    {
+      name: COPILOT_ACTIONS.generateTravelPlan.name,
+      description: COPILOT_ACTIONS.generateTravelPlan.description,
+      parameters: COPILOT_ACTIONS.generateTravelPlan.parameters,
+      handler: handleGenerateTravelFromChat,
+      render: ({ status, result }) => (
+        <CopilotActionBubble
+          status={status}
+          result={result}
+          pendingLabel="Generando tu plan de viaje…"
+        />
+      ),
+    },
+    [handleGenerateTravelFromChat]
+  );
+
+  useCopilotAction(
+    {
+      name: COPILOT_ACTIONS.generateFitnessPlan.name,
+      description: COPILOT_ACTIONS.generateFitnessPlan.description,
+      parameters: COPILOT_ACTIONS.generateFitnessPlan.parameters,
+      handler: handleGenerateFitnessFromChat,
+      render: ({ status, result }) => (
+        <CopilotActionBubble
+          status={status}
+          result={result}
+          pendingLabel="Generando tu plan de fitness…"
+        />
+      ),
+    },
+    [handleGenerateFitnessFromChat]
+  );
+
+  useCopilotAction(
+    {
+      name: COPILOT_ACTIONS.generateDevRoadmap.name,
+      description: COPILOT_ACTIONS.generateDevRoadmap.description,
+      parameters: COPILOT_ACTIONS.generateDevRoadmap.parameters,
+      handler: handleGenerateDevFromChat,
+      render: ({ status, result }) => (
+        <CopilotActionBubble
+          status={status}
+          result={result}
+          pendingLabel="Generando tu roadmap…"
+        />
+      ),
+    },
+    [handleGenerateDevFromChat]
+  );
 
   const showHero =
     !travelPlan && !fitnessPlan && !devPlan && !loading && !error;
@@ -277,7 +830,6 @@ export default function Home() {
   return (
     <main className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900">
       <div className="container mx-auto px-4 py-16">
-        {/* Hero Section */}
         {showHero ? (
           <div className="animate-fade-in">
             <div className="text-center mb-16">
@@ -334,61 +886,104 @@ export default function Home() {
           </div>
         ) : null}
 
-        {/* Loading State */}
         {loading ? (
           <LoadingSpinner message="Generando tu plan personalizado..." />
         ) : null}
 
-        {/* Error State */}
         {error && !loading ? (
-          <ErrorMessage
-            message={error}
-            onRetry={() => setError(null)}
-          />
+          <ErrorMessage message={error} onRetry={() => setError(null)} />
         ) : null}
 
-        {/* Travel Plan UI */}
         {travelPlan && !loading && !error ? (
-          <div className="max-w-6xl mx-auto animate-fade-in">
-            <button
-              type="button"
-              onClick={() => setTravelPlan(null)}
-              className="mb-6 text-purple-300 hover:text-purple-200 transition-colors flex items-center gap-2"
-            >
-              ← Volver al inicio
-            </button>
+          <div className="max-w-6xl mx-auto animate-fade-in px-4">
+            <div className="flex flex-wrap gap-3 mb-6 items-center">
+              <button
+                type="button"
+                onClick={() => {
+                  setTravelPlan(null);
+                  ConversationManager.clear();
+                }}
+                className="text-purple-300 hover:text-purple-200 transition-colors flex items-center gap-2"
+              >
+                ← Volver al inicio
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  ConversationManager.clear();
+                  window.alert(
+                    "Conversación reiniciada. Puedes empezar de nuevo en el chat."
+                  );
+                }}
+                className="text-gray-400 hover:text-gray-300 transition-colors flex items-center gap-2 ml-auto text-sm"
+              >
+                🔄 Nueva conversación
+              </button>
+            </div>
             <div className="bg-white rounded-2xl shadow-2xl p-6 md:p-10">
               <TravelPlanUI plan={travelPlan} />
             </div>
           </div>
         ) : null}
 
-        {/* Fitness Plan UI */}
         {fitnessPlan && !loading && !error && !travelPlan ? (
-          <div className="max-w-6xl mx-auto animate-fade-in">
-            <button
-              type="button"
-              onClick={() => setFitnessPlan(null)}
-              className="mb-6 text-purple-300 hover:text-purple-200 transition-colors flex items-center gap-2"
-            >
-              ← Volver al inicio
-            </button>
+          <div className="max-w-6xl mx-auto animate-fade-in px-4">
+            <div className="flex flex-wrap gap-3 mb-6 items-center">
+              <button
+                type="button"
+                onClick={() => {
+                  setFitnessPlan(null);
+                  ConversationManager.clear();
+                }}
+                className="text-purple-300 hover:text-purple-200 transition-colors flex items-center gap-2"
+              >
+                ← Volver al inicio
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  ConversationManager.clear();
+                  window.alert(
+                    "Conversación reiniciada. Puedes empezar de nuevo en el chat."
+                  );
+                }}
+                className="text-gray-400 hover:text-gray-300 transition-colors flex items-center gap-2 ml-auto text-sm"
+              >
+                🔄 Nueva conversación
+              </button>
+            </div>
             <div className="bg-white rounded-2xl shadow-2xl p-6 md:p-10">
               <FitnessPlanUI plan={fitnessPlan} />
             </div>
           </div>
         ) : null}
 
-        {/* Dev Roadmap UI */}
         {devPlan && !loading && !error && !travelPlan && !fitnessPlan ? (
-          <div className="max-w-6xl mx-auto animate-fade-in">
-            <button
-              type="button"
-              onClick={() => setDevPlan(null)}
-              className="mb-6 text-purple-300 hover:text-purple-200 transition-colors flex items-center gap-2"
-            >
-              ← Volver al inicio
-            </button>
+          <div className="max-w-6xl mx-auto animate-fade-in px-4">
+            <div className="flex flex-wrap gap-3 mb-6 items-center">
+              <button
+                type="button"
+                onClick={() => {
+                  setDevPlan(null);
+                  ConversationManager.clear();
+                }}
+                className="text-purple-300 hover:text-purple-200 transition-colors flex items-center gap-2"
+              >
+                ← Volver al inicio
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  ConversationManager.clear();
+                  window.alert(
+                    "Conversación reiniciada. Puedes empezar de nuevo en el chat."
+                  );
+                }}
+                className="text-gray-400 hover:text-gray-300 transition-colors flex items-center gap-2 ml-auto text-sm"
+              >
+                🔄 Nueva conversación
+              </button>
+            </div>
             <div className="bg-white rounded-2xl shadow-2xl p-6 md:p-10">
               <DevRoadmapUI roadmap={devPlan} />
             </div>
@@ -396,13 +991,13 @@ export default function Home() {
         ) : null}
       </div>
 
-      {/* Form Modals */}
       {showTravelForm ? (
         <TravelPlanForm
           onClose={() => setShowTravelForm(false)}
           onSubmit={(data) => {
             setShowTravelForm(false);
-            void handleGenerateTravel(travelFormToContext(data));
+            ConversationManager.clear();
+            void runTravelFlow(travelFormToContext(data));
           }}
         />
       ) : null}
@@ -412,7 +1007,8 @@ export default function Home() {
           onClose={() => setShowFitnessForm(false)}
           onSubmit={(data) => {
             setShowFitnessForm(false);
-            void handleGenerateFitness(fitnessFormToContext(data));
+            ConversationManager.clear();
+            void runFitnessFlow(fitnessFormToContext(data));
           }}
         />
       ) : null}
@@ -422,7 +1018,8 @@ export default function Home() {
           onClose={() => setShowDevForm(false)}
           onSubmit={(data) => {
             setShowDevForm(false);
-            void handleGenerateDev(devFormToContext(data));
+            ConversationManager.clear();
+            void runDevFlow(devFormToContext(data));
           }}
         />
       ) : null}

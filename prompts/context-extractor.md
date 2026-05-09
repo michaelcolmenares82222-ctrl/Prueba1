@@ -1,5 +1,36 @@
 # Context Extraction Prompts
 
+## Reglas generales (aplican a TODOS los intents)
+
+1. Extrae **solo** información que el usuario haya mencionado explícitamente.
+2. **No inventes** ni asumas datos: si el usuario no dijo presupuesto, no lo pongas.
+3. Si un campo es opcional y no fue mencionado, **omítelo** del JSON (no uses null ni "").
+4. Mapea sinónimos comunes en español:
+   - `bajar peso` / `adelgazar` / `perder grasa` → `goal: "weight_loss"`
+   - `ganar músculo` / `hipertrofia` / `volumen` → `goal: "muscle_gain"`
+   - `tonificar` / `definir` → `goal: "general"`
+   - `resistencia` / `cardio` / `correr` → `goal: "endurance"`
+   - `mochilero` / `barato` → `travelStyle: "budget"`
+   - `de lujo` / `5 estrellas` → `travelStyle: "luxury"`
+   - `principiante` / `novato` → `experience` o `currentLevel: "beginner"`
+   - `intermedio` → `"intermediate"`; `avanzado` / `experto` → `"advanced"`
+5. **Mensajes muy cortos o respuestas sueltas** (siguen una conversación):
+   - Si el bloque incluye `=== Datos ya recopilados ===`, fusiona esos datos con lo nuevo.
+   - Ejemplos de extracción incremental:
+     - `"5 días con $1500"` → `duration: 5`, `budget: 1500`
+     - `"Solo"` / `"viajo solo"` → `travelers: 1`
+     - `"Somos 4"` → `travelers: 4`
+     - `"Cultura y gastronomía"` → `interests: ["cultura", "gastronomía"]`
+     - `"80 kg"` / `"peso 80"` → `currentWeight: 80` (fitness)
+     - `"1,75 m"` / `"175 cm"` / `"mido 1.75"` → `height: 175` (fitness, siempre cm)
+6. Convierte unidades cuando el usuario las expresa en texto:
+   - Días: "una semana" → 7, "dos semanas" → 14, "1 mes" → 30.
+   - Semanas en timeframe de fitness: "3 meses" → 12, "6 meses" → 24.
+   - Dinero: "$1500" / "1500 USD" / "1500 dólares" → 1500.
+7. Responde SIEMPRE con un único objeto JSON válido, sin texto adicional.
+
+---
+
 ## Travel Context Extraction
 
 El usuario quiere planear un viaje. Extrae todos los parámetros posibles.
