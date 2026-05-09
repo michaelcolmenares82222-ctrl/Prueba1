@@ -25,7 +25,55 @@
 
 ---
 
-## Demo (local)
+## Qué más hemos hecho (resumen del trabajo adicional)
+
+Además del flujo original de intención → contexto → JSON de UI, el repo
+incorpora estas piezas, todas pensadas para **Generative UI** con datos
+reales y rutas navegables:
+
+1. **Navegación global** — `TopNav` en el layout enlaza el asistente (`/`),
+   la **UI morfológica** (`/morphic`), el **App Builder** (`/app-builder`) y
+   la **demo** (`/demo`), resaltando la ruta activa para que no sea un
+   “monolito” de una sola pantalla.
+
+2. **Capa MCP propia** — Integración con **Open-Meteo**, **Nominatim +
+   Overpass**, **Frankfurter** y **Wikipedia** bajo `lib/mcp/*`, expuesta por
+   `app/api/mcp/[tool]/route.ts`. Los viajes pueden enriquecerse en paralelo
+   (`Promise.allSettled`): si un servicio falla, el resto sigue.
+
+3. **Bloque “Datos en tiempo real” en viajes** — Cuando el plan trae
+   `realData`, `TravelPlanUI` monta `RealTimeData` (clima, lugares destacados,
+   resumen wiki) con presentación clara y sin romper la UI si falta algún
+   campo.
+
+4. **Showcase morfológico** — `detectUIContext` + registro de widgets
+   (`lib/ui-context-detector.ts`, `lib/ui-component-registry.ts`) y
+   `MorphicRenderer` con carga diferida, skeletons y animaciones para
+   mapas, timelines, clima, fitness, etc.
+
+5. **App Builder** — Editor + preview con **Sandpack**, generación vía
+   `app/api/build-app` y plantillas probadas (`todo`, `calculator`,
+   `pomodoro`) para que el preview **siempre** tenga un camino válido aunque
+   el modelo alucine.
+
+6. **Landing `/demo`** — Página de presentación con animaciones y datos de
+   ejemplo (p. ej. clima) enlazada desde el resto del sitio.
+
+7. **Rendimiento y depuración** — Paralelización de MCP, caché en memoria con
+   TTL en la ruta de generación, y `lib/perf-log.ts` para marcas de tiempo en
+   servidor (silenciable con `PERF_LOG=0`).
+
+8. **Pruebas contra red real** — `lib/__tests__/mcp.test.ts` (ejecutable con
+   `tsx` o el script `lib/__tests__/run.ps1`) valida los conectores MCP
+   frente a las APIs públicas.
+
+9. **Proveedor LLM unificado** — Flujo principal con **OpenRouter** (modelos
+   free tier) y **Groq** como respaldo; variables documentadas en
+   `.env.example` y en la tabla de abajo.
+
+---
+
+## Demos (local)
 
 | Ruta              | Qué hace                                                     |
 | ----------------- | ------------------------------------------------------------ |
@@ -73,7 +121,7 @@ todo se valida con Zod antes de cruzar la frontera.
 
 ---
 
-## Features
+## Funcionalidades
 
 ### 1. Asistente CopilotKit con 3 flujos
 
@@ -85,7 +133,7 @@ todo se valida con Zod antes de cruzar la frontera.
 - Plantillas dedicadas en `app/components/templates/{travel,fitness,dev}`.
 - Acciones registradas en `lib/copilot-actions.ts`.
 
-### 2. MCP layer con 4 APIs gratuitas
+### 2. Capa MCP con 4 APIs gratuitas
 
 Todas detrás de `lib/mcp/*` y expuestas vía `app/api/mcp/[tool]/route.ts`.
 
@@ -108,29 +156,29 @@ la matriz con lazy loading + skeletons + animación de entrada.
 
 8 widgets disponibles:
 
-| Widget          | Uso típico                          |
-| --------------- | ----------------------------------- |
-| `RouteMap`      | Travel adventure / road trip        |
-| `Timeline`      | Itinerario, roadmap, plan semanal   |
-| `WeatherCards`  | Pronóstico por día                  |
-| `RestaurantMap` | Beach / city break / luxury         |
-| `CalorieTracker`| Fitness weight loss / muscle gain   |
-| `StrengthChart` | Fitness strength / muscle           |
-| `ComponentTree` | Dev roadmap arquitectónico          |
-| `GenericCard`   | Fallback universal                  |
+| Widget          | Uso típico                                      |
+| --------------- | ----------------------------------------------- |
+| `RouteMap`      | Viajes de aventura o rutas en coche             |
+| `Timeline`      | Itinerario, roadmap o plan semanal              |
+| `WeatherCards`  | Pronóstico por día                              |
+| `RestaurantMap` | Playa, escapada urbana o estilo premium         |
+| `CalorieTracker`| Fitness: déficit o volumen muscular             |
+| `StrengthChart` | Fitness: fuerza o hipertrofia                   |
+| `ComponentTree` | Roadmap de desarrollo con vista arquitectónica  |
+| `GenericCard`   | Comodín cuando no encaja un widget específico   |
 
 ### 4. App Builder estilo Lovable
 
 `/app-builder` + `lib/app-builder/code-generator.ts` + `app/api/build-app`.
 
-- Templates probados (`todo`, `calculator`, `pomodoro`) que garantizan que el
-  preview siempre funciona aunque el LLM devuelva basura.
+- Plantillas probadas (`todo`, `calculator`, `pomodoro`) que garantizan que
+  la vista previa siempre funciona aunque el LLM devuelva basura.
 - Editor + preview con `@codesandbox/sandpack-react`.
 - Genera código React + Tailwind y lo monta en milisegundos.
 
 ---
 
-## Setup
+## Configuración local
 
 ### Requisitos
 
@@ -157,8 +205,10 @@ cp .env.example .env.local
 npm run dev
 ```
 
-Abre [http://localhost:3000/demo](http://localhost:3000/demo) — desde ahí
-hay enlaces a las 3 rutas funcionales.
+Abre [http://localhost:3000](http://localhost:3000) o
+[http://localhost:3000/demo](http://localhost:3000/demo): la barra superior
+y la demo enlazan el asistente, la UI morfológica, el App Builder y la
+landing animada.
 
 ---
 
@@ -173,13 +223,14 @@ hay enlaces a las 3 rutas funcionales.
 | `GROQ_CHAT_MODEL`             | No        | `llama-3.1-8b-instant`   | Modelo Groq para chat (sólo si usas Groq).                                 |
 | `GROQ_GENERATION_MODEL`       | No        | `llama-3.3-70b-versatile`| Modelo Groq para generación (sólo si usas Groq).                           |
 | `NEXT_PUBLIC_APP_URL`         | No        | `http://localhost:3000`  | URL pública usada por el cliente (CopilotKit runtime, share links).        |
+| `PERF_LOG`                    | No        | activado                 | Pon `0`, `false` u `off` para silenciar los logs `[perf]` del servidor (`lib/perf-log.ts`). |
 
 > Groq es 100 % opcional: si `OPENROUTER_API_KEY` está presente, se usa
 > OpenRouter por encima.
 
 ---
 
-## Stack
+## Pila tecnológica
 
 | Capa            | Tecnología                                                   |
 | --------------- | ------------------------------------------------------------ |
@@ -209,7 +260,7 @@ hay enlaces a las 3 rutas funcionales.
 
 ---
 
-## Tests
+## Pruebas
 
 Suite standalone (sin Jest/Vitest) que pega contra los MCP en vivo:
 
@@ -227,7 +278,7 @@ code; sólo `FAIL` devuelve `1`.
 
 ---
 
-## Performance
+## Rendimiento
 
 - Generación de UI en frío: ≈70 s la primera vez (intent + context + plan
   enriquecido + LLM). Caché en memoria con TTL de 10 min hace que la misma
@@ -238,7 +289,7 @@ code; sólo `FAIL` devuelve `1`.
 
 ---
 
-## Deploy (Vercel)
+## Despliegue (Vercel)
 
 1. Push del repo a GitHub.
 2. Importa el proyecto en [vercel.com/new](https://vercel.com/new).
