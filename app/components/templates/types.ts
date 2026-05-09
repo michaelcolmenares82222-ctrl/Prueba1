@@ -7,6 +7,54 @@ export interface TravelPlan {
   itinerary: DayPlan[];
   budgetBreakdown: BudgetBreakdown;
   recommendations: Recommendation[];
+  /**
+   * Optional MCP enrichment payload (live weather, Wikipedia summary, top
+   * places). When present, `TravelPlanUI` renders an extra "Datos en tiempo
+   * real" block. When absent, the existing UI is rendered unchanged.
+   */
+  realData?: TravelRealTimeData;
+}
+
+export interface TravelRealTimeData {
+  destination: string;
+  userCurrency?: string;
+  weather: TravelWeather | null;
+  wiki: TravelWikiInfo | null;
+  topPlaces: TravelPlace[];
+  timestamp: string;
+}
+
+export interface TravelWeather {
+  location: string;
+  temperature: number;
+  feelsLike: number;
+  humidity: number;
+  windSpeed: number;
+  description: string;
+  forecast: TravelWeatherDay[];
+}
+
+export interface TravelWeatherDay {
+  date: string;
+  tempMax: number;
+  tempMin: number;
+  precipitation: number;
+}
+
+export interface TravelWikiInfo {
+  title: string;
+  extract: string;
+  thumbnail?: string;
+  url: string;
+}
+
+export interface TravelPlace {
+  name: string;
+  address: string;
+  lat: number;
+  lon: number;
+  type: string;
+  importance: number;
 }
 
 export interface DayPlan {

@@ -31,15 +31,14 @@ import { stripNullish } from "@/lib/args-utils";
 import {
   ConversationManager,
   validateContext,
-  mergeExtractedIntoCollected,
   stripConversationMeta,
   applyOmitDefaults,
-  type ConversationIntent,
 } from "@/lib/conversation-manager";
 import {
   FitnessPlan,
   TravelPlan,
   DevRoadmap,
+  TravelRealTimeData,
 } from "./components/templates/types";
 
 // ============================================================
@@ -143,7 +142,11 @@ async function generateUI(
       data.message || data.error || `Error generando ${intent} UI`
     );
   }
-  return (await res.json()) as { content: string; context: unknown };
+  return (await res.json()) as {
+    content: string;
+    context: unknown;
+    realData?: TravelRealTimeData;
+  };
 }
 
 function CopilotActionBubble({
@@ -249,34 +252,12 @@ function finalizeDevCollected(data: Record<string, unknown>): Record<string, unk
   return out;
 }
 
-async function analyzeMessage(
-  userMessage: string,
-  options?: {
-    intentHint?: ConversationIntent;
-    priorContext?: Record<string, unknown>;
-  }
-): Promise<{ intent: string; context: Record<string, unknown> }> {
-  const res = await fetch("/api/analyze", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      message: userMessage,
-      ...(options?.intentHint ? { intentHint: options.intentHint } : {}),
-      ...(options?.priorContext &&
-      Object.keys(options.priorContext).length > 0
-        ? { priorContext: options.priorContext }
-        : {}),
-    }),
-  });
-  if (!res.ok) {
-    const data = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(data.error || "Error al analizar la solicitud");
-  }
-  return (await res.json()) as {
-    intent: string;
-    context: Record<string, unknown>;
-  };
-}
+// NOTE: previously the chat handlers called `/api/analyze` on every tool
+// invocation to re-extract context from a synthesized sentence. That added
+// 5–25s of latency per turn for ~zero benefit — the CopilotKit tool already
+// gave us a structured `args` object. We now rely solely on those args + the
+// persisted conversation state. The `/api/analyze` endpoint stays intact for
+// external callers / form flows.
 
 function friendlyErrorMessage(
   rawMessage: string,
@@ -362,6 +343,9 @@ export default function Home() {
         console.log("✅ Travel context validated:", ctx);
         const data = await generateUI("travel", ctx);
         const plan = parseTravelPlan(data.content, ctx);
+        if (data.realData) {
+          plan.realData = data.realData;
+        }
         console.log("🗺️ Travel plan parsed:", plan);
         setTravelPlan(plan);
         setFitnessPlan(null);
@@ -529,31 +513,7 @@ export default function Home() {
 
         conversation = ConversationManager.mergeData(patch);
 
-        const parts: string[] = [];
-        if (args.destination) parts.push(`viajar a ${args.destination}`);
-        if (args.duration) parts.push(`por ${args.duration} días`);
-        if (args.budget) parts.push(`con presupuesto de $${args.budget}`);
-        if (args.travelers) parts.push(`${args.travelers} persona(s)`);
-        if (args.interests) parts.push(`intereses: ${args.interests}`);
-        if (args.travelStyle) parts.push(`estilo ${args.travelStyle}`);
-        const userMessage =
-          parts.length > 0
-            ? `Quiero ${parts.join(" ")}`
-            : "Sigo dando detalles de mi viaje.";
-
-        const analyzed = await analyzeMessage(userMessage, {
-          intentHint: "travel",
-          priorContext: stripConversationMeta(conversation.collectedData),
-        });
-        console.log("✅ Analysis result:", analyzed);
-
-        let merged = mergeExtractedIntoCollected(
-          "travel",
-          conversation.collectedData,
-          analyzed.context as Record<string, unknown>
-        );
-        merged = { ...merged, ...patch };
-
+        let merged: Record<string, unknown> = { ...conversation.collectedData };
         if (args.omit === true) {
           merged = applyOmitDefaults("travel", merged);
         }
@@ -686,33 +646,9 @@ export default function Home() {
 
         conversation = ConversationManager.mergeData(patch);
 
-        const parts: string[] = [];
-        if (args.goal) parts.push(String(args.goal));
-        if (args.currentWeight) parts.push(`peso actual ${args.currentWeight}kg`);
-        if (args.targetWeight) parts.push(`peso objetivo ${args.targetWeight}kg`);
-        if (args.height) parts.push(`altura ${args.height}cm`);
-        if (args.age) parts.push(`edad ${args.age} años`);
-        if (args.currentLevel) parts.push(`nivel ${args.currentLevel}`);
-        if (args.daysPerWeek) parts.push(`${args.daysPerWeek} días por semana`);
-        const userMessage =
-          parts.length > 0
-            ? parts.join(", ")
-            : "Sigo dando detalles de mi plan de fitness.";
-
-        const analyzed = await analyzeMessage(userMessage, {
-          intentHint: "fitness",
-          priorContext: stripConversationMeta(conversation.collectedData),
+        let merged: Record<string, unknown> = finalizeFitnessCollected({
+          ...conversation.collectedData,
         });
-        console.log("✅ Analysis result:", analyzed);
-
-        let merged = mergeExtractedIntoCollected(
-          "fitness",
-          conversation.collectedData,
-          analyzed.context as Record<string, unknown>
-        );
-        merged = { ...merged, ...patch };
-        merged = finalizeFitnessCollected(merged);
-
         if (args.omit === true) {
           merged = applyOmitDefaults("fitness", merged);
         }
@@ -835,33 +771,9 @@ export default function Home() {
 
         conversation = ConversationManager.mergeData(patch);
 
-        const parts: string[] = [];
-        if (args.goal) parts.push(`aprender ${args.goal}`);
-        if (args.currentLevel) parts.push(`nivel ${args.currentLevel}`);
-        if (args.timeframe) parts.push(`en ${args.timeframe}`);
-        if (stackList.length > 0)
-          parts.push(`stack: ${stackList.join(", ")}`);
-        if (args.studyTimePerWeek)
-          parts.push(`${args.studyTimePerWeek} horas/semana`);
-        const userMessage =
-          parts.length > 0
-            ? `Quiero ${parts.join(", ")}`
-            : "Sigo con mi roadmap de aprendizaje.";
-
-        const analyzed = await analyzeMessage(userMessage, {
-          intentHint: "development",
-          priorContext: stripConversationMeta(conversation.collectedData),
+        let merged: Record<string, unknown> = finalizeDevCollected({
+          ...conversation.collectedData,
         });
-        console.log("✅ Analysis result:", analyzed);
-
-        let merged = mergeExtractedIntoCollected(
-          "development",
-          conversation.collectedData,
-          analyzed.context as Record<string, unknown>
-        );
-        merged = { ...merged, ...patch };
-        merged = finalizeDevCollected(merged);
-
         if (args.omit === true) {
           merged = applyOmitDefaults("development", merged);
         }

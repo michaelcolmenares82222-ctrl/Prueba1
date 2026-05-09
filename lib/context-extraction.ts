@@ -47,8 +47,8 @@ export async function extractContext(
     // Llamar a Groq
     const response = await groqJsonCompletion(prompt, {
       systemPrompt: SYSTEM_PROMPT,
-      temperature: 0.4,
-      maxTokens: 1000,
+      temperature: 0.3,
+      maxTokens: 400,
     });
 
     // Validar según el tipo

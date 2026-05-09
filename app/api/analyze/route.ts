@@ -4,6 +4,8 @@ import { extractContext } from "@/lib/context-extraction";
 import { checkRateLimit } from "@/lib/groq";
 import type { IntentType } from "@/lib/types";
 import { z } from "zod";
+// Perf logs: silence with PERF_LOG=0.
+import { logStep, perfStart } from "@/lib/perf-log";
 
 // ============================================
 // Request Schema
@@ -28,7 +30,7 @@ const AnalyzeRequestSchema = z.object({
 // ============================================
 
 export async function POST(request: NextRequest) {
-  const startTime = Date.now();
+  const startTime = perfStart();
 
   try {
     // Parse y valida request body
@@ -100,10 +102,15 @@ export async function POST(request: NextRequest) {
     console.log(
       `✅ Analysis complete in ${response.metadata.processingTimeMs}ms`
     );
+    logStep("analyze:POST", startTime, {
+      intent: intentResult.intent,
+      hint: intentHint ? "yes" : "no",
+    });
 
     return NextResponse.json(response, { status: 200 });
   } catch (error: unknown) {
     console.error("❌ Error in /api/analyze:", error);
+    logStep("analyze:POST:error", startTime);
 
     // Errores de validación de Zod
     if (error instanceof z.ZodError) {

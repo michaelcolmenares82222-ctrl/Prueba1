@@ -8,8 +8,15 @@ import { createGroqChatServiceAdapter } from "@/lib/groq-chat-service-adapter";
 import { OpenAIChatCompletionsAdapter } from "@/lib/openrouter-chat-adapter";
 
 // ============================================================
-// CopilotKit Runtime — OpenRouter primary, Groq fallback
+// CopilotKit Runtime — Groq primary, OpenRouter fallback
 // ------------------------------------------------------------
+// Groq llama-3.3-70b-versatile responde en 1-5s frente a 10-70s
+// del free tier de OpenRouter; por eso es el provider primario.
+// OpenRouter sigue siendo fallback automático cuando Groq devuelve
+// 429 `tokens per day exceeded` o `model_decommissioned`.
+//
+// Override explícito vía `LLM_PROVIDER=groq|openrouter` en .env.local.
+//
 // Las acciones (`generate_travel_plan`, etc.) se registran SOLO
 // en el cliente con `useCopilotAction` en `app/page.tsx`. No se
 // vuelven a registrar aquí: hacerlo causaba doble dispatch y los
@@ -51,7 +58,8 @@ function getOpenrouterAdapter(): OpenAIChatCompletionsAdapter | null {
   if (
     !apiKey ||
     apiKey.startsWith("sk-or-your-") ||
-    apiKey === "placeholder"
+    apiKey === "placeholder" ||
+    apiKey.startsWith("placeholder_")
   ) {
     return null;
   }
@@ -80,10 +88,15 @@ function getOpenrouterAdapter(): OpenAIChatCompletionsAdapter | null {
 }
 
 // ============================================================
-// Groq fallback (mismo flujo de antes)
+// Groq (primario) — mismo flujo, ahora con default a llama-3.3-70b-versatile
 // ============================================================
+//
+// llama-3.3-70b-versatile: latencia 1-5s, mayor calidad de razonamiento que
+// llama-3.1-8b-instant. Free tier tiene cuota TPD más estricta (~100k/día);
+// si se agota, el handler POST cae automáticamente a OpenRouter.
+// Override vía `GROQ_CHAT_MODEL` en .env.local.
 
-const DEFAULT_GROQ_CHAT_MODEL = "llama-3.1-8b-instant";
+const DEFAULT_GROQ_CHAT_MODEL = "llama-3.3-70b-versatile";
 
 let groqAdapter: ReturnType<typeof createGroqChatServiceAdapter> | null = null;
 let cachedGroqModel: string | null = null;
@@ -102,30 +115,53 @@ function getGroqAdapter(): ReturnType<typeof createGroqChatServiceAdapter> | nul
   return groqAdapter;
 }
 
-function getActiveAdapter(): {
+type ActiveAdapter = {
   adapter:
     | OpenAIChatCompletionsAdapter
     | ReturnType<typeof createGroqChatServiceAdapter>;
   provider: "openrouter" | "groq";
   model: string;
-} | null {
-  const openrouter = getOpenrouterAdapter();
-  if (openrouter) {
-    return {
-      adapter: openrouter,
-      provider: "openrouter",
-      model:
-        process.env.OPENROUTER_CHAT_MODEL?.trim() || DEFAULT_OPENROUTER_MODEL,
-    };
+};
+
+function buildGroqActive(
+  adapter: ReturnType<typeof createGroqChatServiceAdapter>
+): ActiveAdapter {
+  return {
+    adapter,
+    provider: "groq",
+    model: process.env.GROQ_CHAT_MODEL?.trim() || DEFAULT_GROQ_CHAT_MODEL,
+  };
+}
+
+function buildOpenrouterActive(
+  adapter: OpenAIChatCompletionsAdapter
+): ActiveAdapter {
+  return {
+    adapter,
+    provider: "openrouter",
+    model:
+      process.env.OPENROUTER_CHAT_MODEL?.trim() || DEFAULT_OPENROUTER_MODEL,
+  };
+}
+
+function getActiveAdapter(): ActiveAdapter | null {
+  // Override explícito: respeta LLM_PROVIDER si está y el adapter existe.
+  const explicit = process.env.LLM_PROVIDER?.trim().toLowerCase();
+  if (explicit === "groq") {
+    const groq = getGroqAdapter();
+    if (groq) return buildGroqActive(groq);
+  } else if (explicit === "openrouter") {
+    const openrouter = getOpenrouterAdapter();
+    if (openrouter) return buildOpenrouterActive(openrouter);
   }
+
+  // Default: Groq primario (más rápido), OpenRouter como fallback.
   const groq = getGroqAdapter();
-  if (groq) {
-    return {
-      adapter: groq,
-      provider: "groq",
-      model: process.env.GROQ_CHAT_MODEL?.trim() || DEFAULT_GROQ_CHAT_MODEL,
-    };
-  }
+  if (groq) return buildGroqActive(groq);
+
+  const openrouter = getOpenrouterAdapter();
+  if (openrouter) return buildOpenrouterActive(openrouter);
+
   return null;
 }
 
@@ -133,17 +169,28 @@ function getActiveAdapter(): {
 // POST handler
 // ============================================================
 
+function shouldFallbackToOpenrouter(message: string): boolean {
+  return /tokens per day|model_decommissioned|model[_ ]decommission/i.test(
+    message
+  );
+}
+
 export const POST = async (req: NextRequest) => {
   const active = getActiveAdapter();
   if (!active) {
     return NextResponse.json(
       {
         error:
-          "No chat provider configured. Set OPENROUTER_API_KEY (recommended) or GROQ_API_KEY in .env.local.",
+          "No chat provider configured. Set GROQ_API_KEY (recommended) or OPENROUTER_API_KEY in .env.local.",
       },
       { status: 500 }
     );
   }
+
+  // Si el provider primario es Groq, conservamos un clon del request por si
+  // hay que reintentar con OpenRouter (el body es un stream de un solo uso).
+  const requestForRetry =
+    active.provider === "groq" && getOpenrouterAdapter() ? req.clone() : null;
 
   const { handleRequest } = copilotRuntimeNextJSAppRouterEndpoint({
     runtime,
@@ -157,6 +204,41 @@ export const POST = async (req: NextRequest) => {
     console.error("[copilotkit] handleRequest crashed:", err);
     const message =
       err instanceof Error ? err.message : "Unknown runtime error";
+
+    if (
+      active.provider === "groq" &&
+      requestForRetry &&
+      shouldFallbackToOpenrouter(message)
+    ) {
+      const fallback = getOpenrouterAdapter();
+      if (fallback) {
+        console.warn(
+          `[llm:fallback] Groq runtime error ("${message}"); retrying CopilotKit request via OpenRouter.`
+        );
+        const retry = copilotRuntimeNextJSAppRouterEndpoint({
+          runtime,
+          serviceAdapter: fallback,
+          endpoint: "/api/copilotkit",
+        });
+        try {
+          return await retry.handleRequest(requestForRetry);
+        } catch (fallbackErr) {
+          console.error(
+            "[copilotkit] OpenRouter fallback also failed:",
+            fallbackErr
+          );
+          const fallbackMessage =
+            fallbackErr instanceof Error
+              ? fallbackErr.message
+              : "Unknown fallback error";
+          return NextResponse.json(
+            { error: "copilotkit_runtime_error", message: fallbackMessage },
+            { status: 500 }
+          );
+        }
+      }
+    }
+
     return NextResponse.json(
       { error: "copilotkit_runtime_error", message },
       { status: 500 }
@@ -176,6 +258,6 @@ export async function GET() {
     provider: active?.provider ?? null,
     model: active?.model ?? null,
     description:
-      "CopilotKit runtime endpoint. Prefiere OpenRouter si OPENROUTER_API_KEY está; cae a Groq si no.",
+      "CopilotKit runtime endpoint. Prefiere Groq (más rápido); cae a OpenRouter como fallback. Override con LLM_PROVIDER en .env.local.",
   });
 }

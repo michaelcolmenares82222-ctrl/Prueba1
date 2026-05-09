@@ -5,6 +5,7 @@ import { TravelPlan } from "../types";
 import { ItineraryTimeline } from "./ItineraryTimeline";
 import { BudgetBreakdown } from "./BudgetBreakdown";
 import { Recommendations } from "./Recommendations";
+import { RealTimeData } from "./RealTimeData";
 import { MapPin, Calendar, DollarSign, Sparkles } from "lucide-react";
 
 interface TravelPlanUIProps {
@@ -36,6 +37,8 @@ export function TravelPlanUI({ plan }: TravelPlanUIProps) {
 
   return (
     <div className="space-y-6">
+      {plan.realData ? <RealTimeData data={plan.realData} /> : null}
+
       {/* Header */}
       <div className="bg-gradient-to-r from-blue-600 to-purple-600 rounded-2xl p-8 text-white">
         <div className="flex items-start justify-between">
