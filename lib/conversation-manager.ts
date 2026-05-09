@@ -262,6 +262,53 @@ export function validateContext(
   };
 }
 
+/**
+ * Defaults por intent y campo. Se usan cuando el usuario dice "omitir"
+ * o cuando ya gastamos el contador anti-loop. Solo se aplican a campos
+ * que aún están vacíos (no pisamos lo que el usuario dio explícitamente).
+ */
+const DEFAULTS: Record<ConversationIntent, Record<string, unknown>> = {
+  travel: {
+    duration: 7,
+    budget: 1500,
+    travelers: 2,
+    interests: ["cultura", "gastronomía"],
+    travelStyle: "standard",
+  },
+  fitness: {
+    currentWeight: 70,
+    height: 170,
+    age: 30,
+    currentLevel: "intermediate",
+    daysPerWeek: 3,
+  },
+  development: {
+    experience: "beginner",
+    timeframe: "3 meses",
+    targetStack: [],
+    studyTimePerWeek: 10,
+  },
+};
+
+/**
+ * Rellena con defaults cualquier campo progresivo (y los requeridos
+ * que admitan default) que aún no esté presente. No pisa nada que ya
+ * exista en `data`.
+ */
+export function applyOmitDefaults(
+  intent: ConversationIntent,
+  data: Record<string, unknown>
+): Record<string, unknown> {
+  const out = { ...data };
+  const defaults = DEFAULTS[intent] ?? {};
+  for (const [field, value] of Object.entries(defaults)) {
+    if (!fieldPresent(intent, field, out)) {
+      out[field] = value;
+    }
+  }
+  return out;
+}
+
 /** Quita metadatos internos antes de validar con Zod / generate-ui. */
 export function stripConversationMeta(
   data: Record<string, unknown>

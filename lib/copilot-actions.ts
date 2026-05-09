@@ -6,17 +6,28 @@ import {
 } from "./schemas";
 
 // ============================================================
-// Esquemas estructurados pero MUY simples para Groq.
+// Esquemas de tools para CopilotKit.
 // ------------------------------------------------------------
-// Aprendizaje del bug `tool_use_failed`:
-//   - Un solo `userMessage: string` también confunde al modelo.
-//   - Schemas con arrays / objects anidados / enums lo rompen.
-//   - Lo que SÍ funciona: 2-3 parámetros primitivos
-//     (string|number) TODOS opcionales, con descripciones claras.
-// El handler en `app/page.tsx` reconstruye una frase a partir de
-// estos args, llama a /api/analyze para extraer el resto del
-// contexto y luego ejecuta el flujo correspondiente.
+// Reglas de oro aprendidas:
+//   - TODOS los parámetros opcionales (LLM rellena solo lo que el
+//     usuario mencionó en ese turno).
+//   - Tipos primitivos (string|number|boolean). Sin arrays anidados,
+//     sin enums Zod-style: para listas usamos string CSV y partimos
+//     en el handler.
+//   - Hay UN parámetro por cada campo que el ConversationManager
+//     puede llegar a pedir; si falta, el LLM no tiene dónde meter la
+//     respuesta del usuario y entramos en loop.
+//   - `omit` (boolean) → el usuario quiere saltar la pregunta actual;
+//     el handler rellena ese campo con un default razonable.
 // ============================================================
+
+const OMIT_PARAM: Parameter = {
+  name: "omit",
+  type: "boolean",
+  description:
+    "true si el usuario dijo 'omitir', 'no sé', 'da igual', 'cualquiera' o similar — el sistema rellenará un valor por defecto razonable.",
+  required: false,
+};
 
 const TRAVEL_PARAMS: Parameter[] = [
   {
@@ -50,6 +61,14 @@ const TRAVEL_PARAMS: Parameter[] = [
       "Intereses separados por coma: cultura, gastronomía, playa, naturaleza…",
     required: false,
   },
+  {
+    name: "travelStyle",
+    type: "string",
+    description:
+      "Estilo de viaje: 'mochilero' (budget), 'estandar' (standard) o 'lujo' (luxury).",
+    required: false,
+  },
+  OMIT_PARAM,
 ];
 
 const FITNESS_PARAMS: Parameter[] = [
@@ -67,11 +86,38 @@ const FITNESS_PARAMS: Parameter[] = [
     required: false,
   },
   {
-    name: "height",
+    name: "targetWeight",
     type: "number",
-    description: "Altura del usuario en centímetros.",
+    description: "Peso objetivo del usuario en kilogramos.",
     required: false,
   },
+  {
+    name: "height",
+    type: "number",
+    description:
+      "Altura del usuario en centímetros (si dice 1.75 m, conviértelo a 175).",
+    required: false,
+  },
+  {
+    name: "age",
+    type: "number",
+    description: "Edad del usuario en años.",
+    required: false,
+  },
+  {
+    name: "currentLevel",
+    type: "string",
+    description:
+      "Nivel actual del usuario: 'principiante', 'intermedio' o 'avanzado'.",
+    required: false,
+  },
+  {
+    name: "daysPerWeek",
+    type: "number",
+    description: "Días que el usuario puede entrenar a la semana (1-7).",
+    required: false,
+  },
+  OMIT_PARAM,
 ];
 
 const DEV_PARAMS: Parameter[] = [
@@ -89,6 +135,27 @@ const DEV_PARAMS: Parameter[] = [
       "Nivel actual del usuario: 'principiante', 'intermedio' o 'avanzado'.",
     required: false,
   },
+  {
+    name: "timeframe",
+    type: "string",
+    description:
+      "Plazo para lograr el objetivo (texto libre): '3 meses', '6 semanas', 'un año'…",
+    required: false,
+  },
+  {
+    name: "targetStack",
+    type: "string",
+    description:
+      "Tecnologías de interés separadas por coma: 'React, Node, PostgreSQL'.",
+    required: false,
+  },
+  {
+    name: "studyTimePerWeek",
+    type: "number",
+    description: "Horas a la semana que el usuario puede dedicar a aprender.",
+    required: false,
+  },
+  OMIT_PARAM,
 ];
 
 export const COPILOT_ACTIONS = {

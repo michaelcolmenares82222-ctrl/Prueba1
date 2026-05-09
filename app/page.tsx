@@ -33,7 +33,7 @@ import {
   validateContext,
   mergeExtractedIntoCollected,
   stripConversationMeta,
-  fieldPresent,
+  applyOmitDefaults,
   type ConversationIntent,
 } from "@/lib/conversation-manager";
 import {
@@ -173,10 +173,69 @@ function mapSpanishToExperience(
 ): "beginner" | "intermediate" | "advanced" | undefined {
   if (!raw || typeof raw !== "string") return undefined;
   const x = raw.trim().toLowerCase();
-  if (/principiante|novato|iniciante/.test(x)) return "beginner";
-  if (/intermedio/.test(x)) return "intermediate";
-  if (/avanzado|experto/.test(x)) return "advanced";
+  if (/principiante|novato|iniciante|beginner/.test(x)) return "beginner";
+  if (/intermedio|intermediate/.test(x)) return "intermediate";
+  if (/avanzado|experto|advanced/.test(x)) return "advanced";
   return undefined;
+}
+
+function mapTravelStyle(
+  raw?: string
+): "budget" | "standard" | "luxury" | undefined {
+  if (!raw || typeof raw !== "string") return undefined;
+  const x = raw.trim().toLowerCase();
+  if (/mochilero|barato|económico|budget/.test(x)) return "budget";
+  if (/estandar|estándar|medio|standard/.test(x)) return "standard";
+  if (/lujo|premium|luxury/.test(x)) return "luxury";
+  return undefined;
+}
+
+type FitnessGoalEnum =
+  | "weight_loss"
+  | "muscle_gain"
+  | "endurance"
+  | "flexibility"
+  | "general";
+
+function mapFitnessGoal(raw?: unknown): FitnessGoalEnum | undefined {
+  if (typeof raw !== "string") return undefined;
+  const x = raw.trim().toLowerCase();
+  if (!x) return undefined;
+  // Si ya viene como enum válido, devuélvelo tal cual.
+  if (
+    x === "weight_loss" ||
+    x === "muscle_gain" ||
+    x === "endurance" ||
+    x === "flexibility" ||
+    x === "general"
+  ) {
+    return x;
+  }
+  if (/baj(ar|o)\s*(de\s*)?peso|perder\s*peso|adelgaz|weight\s*loss|quemar\s*grasa|definir/i.test(x)) {
+    return "weight_loss";
+  }
+  if (/m[uú]sculo|hipertrofia|ganar\s*masa|muscle|bulk/i.test(x)) {
+    return "muscle_gain";
+  }
+  if (/resistencia|cardio|endurance|aer[oó]bic|correr|running/i.test(x)) {
+    return "endurance";
+  }
+  if (/flexibilidad|movilidad|yoga|stretch/i.test(x)) {
+    return "flexibility";
+  }
+  if (/tonificar|forma|general|salud|bienestar/i.test(x)) {
+    return "general";
+  }
+  return "general";
+}
+
+function finalizeFitnessCollected(
+  data: Record<string, unknown>
+): Record<string, unknown> {
+  const out = { ...data };
+  const mapped = mapFitnessGoal(out.goal);
+  if (mapped) out.goal = mapped;
+  return out;
 }
 
 function finalizeDevCollected(data: Record<string, unknown>): Record<string, unknown> {
@@ -398,6 +457,8 @@ export default function Home() {
       budget?: number;
       travelers?: number;
       interests?: string;
+      travelStyle?: string;
+      omit?: boolean;
     }): Promise<string> => {
       console.log("🌍 Travel tool called with args:", args);
 
@@ -413,16 +474,19 @@ export default function Home() {
           ConversationManager.save(conversation);
         }
 
+        const mappedStyle = mapTravelStyle(args.travelStyle);
         const prevEmpty = Number(
           conversation.collectedData._emptyAttempts ?? 0
         );
         const hasNewData =
+          args.omit === true ||
           (args.destination != null &&
             String(args.destination).trim() !== "") ||
           (args.duration != null && Number.isFinite(args.duration)) ||
           (args.budget != null && Number.isFinite(args.budget)) ||
           (args.travelers != null && Number.isFinite(args.travelers)) ||
-          (args.interests != null && String(args.interests).trim() !== "");
+          (args.interests != null && String(args.interests).trim() !== "") ||
+          mappedStyle != null;
 
         if (!hasNewData) {
           console.warn(
@@ -461,6 +525,7 @@ export default function Home() {
             .filter(Boolean);
           if (list.length > 0) patch.interests = list;
         }
+        if (mappedStyle) patch.travelStyle = mappedStyle;
 
         conversation = ConversationManager.mergeData(patch);
 
@@ -470,6 +535,7 @@ export default function Home() {
         if (args.budget) parts.push(`con presupuesto de $${args.budget}`);
         if (args.travelers) parts.push(`${args.travelers} persona(s)`);
         if (args.interests) parts.push(`intereses: ${args.interests}`);
+        if (args.travelStyle) parts.push(`estilo ${args.travelStyle}`);
         const userMessage =
           parts.length > 0
             ? `Quiero ${parts.join(" ")}`
@@ -488,15 +554,8 @@ export default function Home() {
         );
         merged = { ...merged, ...patch };
 
-        if (/omitir|da igual|lo que sea|no importa|cualquiera/i.test(userMessage)) {
-          if (!fieldPresent("travel", "duration", merged))
-            merged.duration = 7;
-          if (!fieldPresent("travel", "budget", merged))
-            merged.budget = 1500;
-          if (!fieldPresent("travel", "travelers", merged))
-            merged.travelers = 2;
-          if (!fieldPresent("travel", "interests", merged))
-            merged.interests = ["cultura", "gastronomía"];
+        if (args.omit === true) {
+          merged = applyOmitDefaults("travel", merged);
         }
 
         conversation = {
@@ -544,7 +603,12 @@ export default function Home() {
     async (args: {
       goal?: string;
       currentWeight?: number;
+      targetWeight?: number;
       height?: number;
+      age?: number;
+      currentLevel?: string;
+      daysPerWeek?: number;
+      omit?: boolean;
     }): Promise<string> => {
       console.log("💪 Fitness tool called with args:", args);
 
@@ -560,13 +624,19 @@ export default function Home() {
           ConversationManager.save(conversation);
         }
 
+        const mappedLevel = mapSpanishToExperience(args.currentLevel);
         const prevEmpty = Number(
           conversation.collectedData._emptyAttempts ?? 0
         );
         const hasNewData =
+          args.omit === true ||
           (args.goal != null && String(args.goal).trim() !== "") ||
           (args.currentWeight != null && Number.isFinite(args.currentWeight)) ||
-          (args.height != null && Number.isFinite(args.height));
+          (args.targetWeight != null && Number.isFinite(args.targetWeight)) ||
+          (args.height != null && Number.isFinite(args.height)) ||
+          (args.age != null && Number.isFinite(args.age)) ||
+          mappedLevel != null ||
+          (args.daysPerWeek != null && Number.isFinite(args.daysPerWeek));
 
         if (!hasNewData) {
           console.warn(
@@ -585,11 +655,33 @@ export default function Home() {
         }
 
         const patch: Record<string, unknown> = {};
+        if (args.goal != null && String(args.goal).trim() !== "") {
+          // Guardamos el goal como enum desde el principio para que el
+          // contexto persistido sea consistente con FitnessContextSchema.
+          // Si no logramos mapear, dejamos el texto crudo y dejamos que
+          // finalizeFitnessCollected lo convierta antes de validar.
+          const mappedGoal = mapFitnessGoal(args.goal);
+          patch.goal = mappedGoal ?? String(args.goal).trim();
+        }
         if (args.currentWeight != null && Number.isFinite(args.currentWeight)) {
           patch.currentWeight = args.currentWeight;
         }
+        if (args.targetWeight != null && Number.isFinite(args.targetWeight)) {
+          patch.targetWeight = args.targetWeight;
+        }
         if (args.height != null && Number.isFinite(args.height)) {
           patch.height = args.height;
+        }
+        if (args.age != null && Number.isFinite(args.age) && args.age > 0) {
+          patch.age = args.age;
+        }
+        if (mappedLevel) patch.currentLevel = mappedLevel;
+        if (
+          args.daysPerWeek != null &&
+          Number.isFinite(args.daysPerWeek) &&
+          args.daysPerWeek > 0
+        ) {
+          patch.daysPerWeek = Math.min(7, Math.max(1, Math.round(args.daysPerWeek)));
         }
 
         conversation = ConversationManager.mergeData(patch);
@@ -597,7 +689,11 @@ export default function Home() {
         const parts: string[] = [];
         if (args.goal) parts.push(String(args.goal));
         if (args.currentWeight) parts.push(`peso actual ${args.currentWeight}kg`);
+        if (args.targetWeight) parts.push(`peso objetivo ${args.targetWeight}kg`);
         if (args.height) parts.push(`altura ${args.height}cm`);
+        if (args.age) parts.push(`edad ${args.age} años`);
+        if (args.currentLevel) parts.push(`nivel ${args.currentLevel}`);
+        if (args.daysPerWeek) parts.push(`${args.daysPerWeek} días por semana`);
         const userMessage =
           parts.length > 0
             ? parts.join(", ")
@@ -615,6 +711,11 @@ export default function Home() {
           analyzed.context as Record<string, unknown>
         );
         merged = { ...merged, ...patch };
+        merged = finalizeFitnessCollected(merged);
+
+        if (args.omit === true) {
+          merged = applyOmitDefaults("fitness", merged);
+        }
 
         conversation = {
           ...conversation,
@@ -661,6 +762,10 @@ export default function Home() {
     async (args: {
       goal?: string;
       currentLevel?: string;
+      timeframe?: string;
+      targetStack?: string;
+      studyTimePerWeek?: number;
+      omit?: boolean;
     }): Promise<string> => {
       console.log("💻 Dev tool called with args:", args);
 
@@ -676,12 +781,26 @@ export default function Home() {
           ConversationManager.save(conversation);
         }
 
+        const exp = mapSpanishToExperience(args.currentLevel);
+        const stackList =
+          args.targetStack != null && String(args.targetStack).trim() !== ""
+            ? String(args.targetStack)
+                .split(/[,;]/)
+                .map((s) => s.trim())
+                .filter(Boolean)
+            : [];
+
         const prevEmpty = Number(
           conversation.collectedData._emptyAttempts ?? 0
         );
         const hasNewData =
+          args.omit === true ||
           (args.goal != null && String(args.goal).trim() !== "") ||
-          mapSpanishToExperience(args.currentLevel) != null;
+          exp != null ||
+          (args.timeframe != null && String(args.timeframe).trim() !== "") ||
+          stackList.length > 0 ||
+          (args.studyTimePerWeek != null &&
+            Number.isFinite(args.studyTimePerWeek));
 
         if (!hasNewData) {
           console.warn("⚠️ Dev tool called without new fields — possible loop");
@@ -701,14 +820,29 @@ export default function Home() {
         if (args.goal != null && String(args.goal).trim() !== "") {
           patch.goal = String(args.goal).trim();
         }
-        const exp = mapSpanishToExperience(args.currentLevel);
         if (exp) patch.experience = exp;
+        if (args.timeframe != null && String(args.timeframe).trim() !== "") {
+          patch.timeframe = String(args.timeframe).trim();
+        }
+        if (stackList.length > 0) patch.targetStack = stackList;
+        if (
+          args.studyTimePerWeek != null &&
+          Number.isFinite(args.studyTimePerWeek) &&
+          args.studyTimePerWeek > 0
+        ) {
+          patch.studyTimePerWeek = args.studyTimePerWeek;
+        }
 
         conversation = ConversationManager.mergeData(patch);
 
         const parts: string[] = [];
         if (args.goal) parts.push(`aprender ${args.goal}`);
         if (args.currentLevel) parts.push(`nivel ${args.currentLevel}`);
+        if (args.timeframe) parts.push(`en ${args.timeframe}`);
+        if (stackList.length > 0)
+          parts.push(`stack: ${stackList.join(", ")}`);
+        if (args.studyTimePerWeek)
+          parts.push(`${args.studyTimePerWeek} horas/semana`);
         const userMessage =
           parts.length > 0
             ? `Quiero ${parts.join(", ")}`
@@ -727,6 +861,10 @@ export default function Home() {
         );
         merged = { ...merged, ...patch };
         merged = finalizeDevCollected(merged);
+
+        if (args.omit === true) {
+          merged = applyOmitDefaults("development", merged);
+        }
 
         conversation = {
           ...conversation,
